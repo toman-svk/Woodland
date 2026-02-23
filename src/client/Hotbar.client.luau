@@ -1,4 +1,11 @@
 -- StarterPlayer/StarterPlayerScripts/Hotbar.client.lua
+-- Custom hotbar temporarily disabled.
+-- To re-enable, set this to true.
+local HOTBAR_ENABLED = false
+if not HOTBAR_ENABLED then
+	return
+end
+
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 

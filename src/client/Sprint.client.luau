@@ -5,7 +5,8 @@ local UIS = game:GetService("UserInputService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local sprintEvent = ReplicatedStorage:WaitForChild("SprintToggle") :: RemoteEvent
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local sprintEvent = Shared:WaitForChild("SprintToggle") :: RemoteEvent
 
 local NORMAL_SPEED = 16
 local SPRINT_SPEED = 28

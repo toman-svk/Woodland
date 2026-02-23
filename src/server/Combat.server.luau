@@ -3,8 +3,9 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local attackEvent = ReplicatedStorage:WaitForChild("CombatAttack")
-local hitEvent = ReplicatedStorage:WaitForChild("CombatHit")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local attackEvent = Shared:WaitForChild("CombatAttack")
+local hitEvent = Shared:WaitForChild("CombatHit")
 
 -- TUNING
 local ATTACK_COOLDOWN = 0.5
@@ -71,7 +72,8 @@ attackEvent.OnServerEvent:Connect(function(player)
 	end
 	lastAttackTime[player] = now
 
-	local mana = getStats(player)
+	local mana, maxMana = getStats(player)
+	if not mana then return end
 	if not mana then return end
 	mana = mana
 

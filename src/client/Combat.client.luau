@@ -8,8 +8,9 @@ local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 
-local attackEvent = ReplicatedStorage:WaitForChild("CombatAttack") :: RemoteEvent
-local hitEvent = ReplicatedStorage:WaitForChild("CombatHit") :: RemoteEvent
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local attackEvent = Shared:WaitForChild("CombatAttack") :: RemoteEvent
+local hitEvent = Shared:WaitForChild("CombatHit") :: RemoteEvent
 
 -- Tuning
 local ATTACK_KEY = Enum.KeyCode.F
@@ -267,11 +268,12 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
 		return
 	end
-
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		-- If a tool is equipped, Tool.Activated will handle it (AxeClient)
+		-- Only allow unarmed attacks here
 		local tool = getEquippedTool()
-		if tool and tool:FindFirstChild("SwingAnim") then
-			tryAttack("MouseButton1_WithTool")
+		if not tool then
+			tryAttack("MouseButton1_Unarmed")
 		end
 	elseif input.KeyCode == ATTACK_KEY then
 		tryAttack("Key_F")

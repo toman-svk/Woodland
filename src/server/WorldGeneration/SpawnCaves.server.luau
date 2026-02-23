@@ -44,6 +44,15 @@ local function inSpawnHub(x, z)
 	return (dx*dx + dz*dz) <= SPAWN_R2
 end
 
+-- ✅ NEW: circular world bounds check (avoid shoreline too)
+local WORLD_R = WorldConfig.WORLD_RADIUS or (WorldConfig.AREA_SIZE / 2)
+local EDGE_MARGIN = WorldConfig.SPAWN_EDGE_MARGIN or 0
+local WORLD_R2 = (WORLD_R - EDGE_MARGIN) * (WORLD_R - EDGE_MARGIN)
+
+local function inWorld(x: number, z: number): boolean
+	return (x*x + z*z) <= WORLD_R2
+end
+
 local half = WorldConfig.AREA_SIZE / 2
 local caveCount = 0
 local maxCaves = WorldConfig.MAX_CAVES or math.huge
@@ -57,6 +66,11 @@ for x = -half, half, WorldConfig.CAVE_SPACING do
 
 		local px = x + ox
 		local pz = z + oz
+
+		-- ✅ NEW: only spawn inside circular land area (with margin)
+		if not inWorld(px, pz) then
+			continue
+		end
 
 		-- ✅ keep spawn hub clear
 		if inSpawnHub(px, pz) then

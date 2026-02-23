@@ -44,6 +44,15 @@ local function inSpawnHub(x, z)
 	return (dx*dx + dz*dz) <= SPAWN_R2
 end
 
+-- ✅ NEW: circular world bounds check (avoid shoreline too)
+local WORLD_R = WorldConfig.WORLD_RADIUS or (WorldConfig.AREA_SIZE / 2)
+local EDGE_MARGIN = WorldConfig.SPAWN_EDGE_MARGIN or 0
+local WORLD_R2 = (WORLD_R - EDGE_MARGIN) * (WORLD_R - EDGE_MARGIN)
+
+local function inWorld(x: number, z: number): boolean
+	return (x*x + z*z) <= WORLD_R2
+end
+
 -- GEM SETTINGS
 local GEM_SPACING = 60
 local GEM_JITTER = 20
@@ -86,6 +95,11 @@ for x = -half, half, GEM_SPACING do
 
 			local hx = x + ox
 			local hz = z + oz
+
+			-- ✅ NEW: only spawn inside circular land area (with margin)
+			if not inWorld(hx, hz) then
+				continue
+			end
 
 			-- ✅ keep spawn hub clear
 			if inSpawnHub(hx, hz) then

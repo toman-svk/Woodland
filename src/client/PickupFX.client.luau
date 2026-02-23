@@ -3,7 +3,8 @@ local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
 
 local player = Players.LocalPlayer
-local PickupFX = ReplicatedStorage:WaitForChild("PickupFX")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local PickupFX = Shared:WaitForChild("PickupFX") :: RemoteEvent
 
 local function getHRP()
 	local char = player.Character

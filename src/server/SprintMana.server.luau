@@ -1,7 +1,10 @@
+-- src/server/SprintMana.server.luau
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local sprintEvent = ReplicatedStorage:WaitForChild("SprintToggle")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local sprintEvent = Shared:WaitForChild("SprintToggle")
 
 --========================
 -- TUNING
@@ -59,9 +62,8 @@ end
 -- Sprint toggle from client
 --========================
 sprintEvent.OnServerEvent:Connect(function(player, wantsSprint)
-	local mana = getStats(player)
+	local mana, maxMana = getStats(player)
 	if not mana then return end
-	mana = mana
 
 	if wantsSprint then
 		if mana.Value >= MIN_MANA_TO_SPRINT then
