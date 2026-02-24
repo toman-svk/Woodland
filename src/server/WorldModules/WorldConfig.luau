@@ -38,19 +38,20 @@ WorldConfig.SPAWN_EDGE_MARGIN = 70                     -- keep spawns away from 
 WorldConfig.MOUNTAIN_RADIUS = 150   -- bigger = wider mountain
 WorldConfig.MOUNTAIN_HEIGHT = 80   -- bigger = taller mountain
 
--- Trees
-WorldConfig.TREE_SPACING = 4
-WorldConfig.TREE_CHANCE = 0.9
-WorldConfig.MAX_TREES = 2000
 
 
-	-- Tree size randomization
-	WorldConfig.TREE_SCALE_MIN = 1
-	WorldConfig.TREE_SCALE_MAX = 2.0
+	-- Trees
+WorldConfig.TREE_SPACING = 5          -- slightly larger logical spacing (we'll still place dense via grid+clusters)
+WorldConfig.TREE_CHANCE = 0.65        -- base chance per cell (clusters handle density)
+WorldConfig.MAX_TREES = 2600
 
--- Caves
-WorldConfig.CAVE_SPACING = 150
-WorldConfig.CAVE_JITTER = 25
-WorldConfig.MAX_CAVES = 9999
+WorldConfig.TREE_SCALE_MIN = 2.0
+WorldConfig.TREE_SCALE_MAX = 5.0
+
+-- Caves (make rarer)
+WorldConfig.CAVE_SPACING = 240        -- bigger spacing = fewer
+WorldConfig.CAVE_JITTER = 50
+WorldConfig.CAVE_CHANCE = 0.25        -- NEW: chance per grid cell
+WorldConfig.MAX_CAVES = 18            -- NEW: cap
 
 return WorldConfig

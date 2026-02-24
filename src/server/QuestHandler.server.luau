@@ -1,6 +1,8 @@
 -- ServerScriptService/Server/QuestHandler.server.lua
 --!strict
 
+--testcomment
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
@@ -10,39 +12,41 @@ local OpenDialogue = Remotes:WaitForChild("OpenDialogue")
 
 local REQUIRED_WOOD = 10
 
+type NumericValue = IntValue | NumberValue
+
 -- Track per-player completion (in-memory; later you can persist via DataStore)
 local questDone: {[Player]: boolean} = {}
 
-local function getNumberValue(container: Instance?, name: string): NumberValue?
+local function getNumericValue(container: Instance?, name: string): NumericValue?
 	if not container then
 		return nil
 	end
 
 	local v = container:FindFirstChild(name)
-	if v and v:IsA("NumberValue") then
-		return v
+	if v and (v:IsA("IntValue") or v:IsA("NumberValue")) then
+		return v :: NumericValue
 	end
 
 	return nil
 end
 
-local function getWoodValue(player: Player): NumberValue?
+local function getWoodValue(player: Player): NumericValue?
 	-- Primary source in your project: Inventory folder
 	local inv = player:FindFirstChild("Inventory")
-	local wood = getNumberValue(inv, "Wood")
+	local wood = getNumericValue(inv, "Wood")
 	if wood then
 		return wood
 	end
 
 	-- Optional fallbacks (won't hurt if you later change structure)
 	local leaderstats = player:FindFirstChild("leaderstats")
-	wood = getNumberValue(leaderstats, "Wood")
+	wood = getNumericValue(leaderstats, "Wood")
 	if wood then
 		return wood
 	end
 
 	local stats = player:FindFirstChild("Stats")
-	wood = getNumberValue(stats, "Wood")
+	wood = getNumericValue(stats, "Wood")
 	if wood then
 		return wood
 	end
@@ -60,9 +64,21 @@ local function bindPrompt(prompt: ProximityPrompt)
 	prompt.Triggered:Connect(function(player: Player)
 		print("[QuestHandler] Prompt triggered:", prompt:GetFullName(), "by", player.Name)
 
+		local inv = player:FindFirstChild("Inventory")
+		if inv then
+			local w = inv:FindFirstChild("Wood")
+			if w then
+				print("[QuestHandler] Inventory.Wood class:", w.ClassName, "value:", (w :: any).Value)
+			else
+				print("[QuestHandler] Inventory exists but Wood missing")
+			end
+		else
+			print("[QuestHandler] Inventory missing on player")
+		end
+
 		local wood = getWoodValue(player)
 		if not wood then
-			warn("[QuestHandler] No Inventory/leaderstats/Stats Wood value found for", player.Name)
+			warn("[QuestHandler] No Inventory/leaderstats/Stats numeric Wood value found for", player.Name)
 			OpenDialogue:FireClient(player, "NoWoodStat")
 			return
 		end
@@ -76,7 +92,7 @@ local function bindPrompt(prompt: ProximityPrompt)
 			wood.Value -= REQUIRED_WOOD
 			questDone[player] = true
 
-			-- Later: give BetterAxe here
+			-- TODO: give BetterAxe here (optional)
 			OpenDialogue:FireClient(player, "QuestComplete")
 		else
 			OpenDialogue:FireClient(player, "QuestNotDone")

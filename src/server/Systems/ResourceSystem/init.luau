@@ -1,14 +1,10 @@
 --!strict
 -- ServerScriptService/Server/Systems/ResourceSystem
--- Damages resources (trees for now). When a tree breaks:
--- 1) Tree model disappears
--- 2) Wood log pickups spawn on the ground (count = WOOD_ON_BREAK) via PickupService
--- 3) Player must walk near each log; logs fly into the player
--- 4) Inventory Wood increases ONLY after each log is collected
 
 local CollectionService = game:GetService("CollectionService")
 
 local TreeWiggle = require(script.Parent:WaitForChild("TreeWiggle"))
+local TreeSound = require(script.Parent:WaitForChild("TreeSound"))
 local PickupService = require(script.Parent:WaitForChild("PickupService"))
 
 local ResourceSystem = {}
@@ -27,17 +23,12 @@ local TREE_TAG = "Tree"
 local HP_ATTR = "HP"
 local BROKEN_ATTR = "Broken"
 
--- Reward config
-local WOOD_PER_HIT = 0      -- optional: goes straight to inventory (not pickups)
-local WOOD_ON_BREAK = 5     -- number of wood LOGS to spawn when tree breaks
+local WOOD_PER_HIT = 0
+local WOOD_ON_BREAK = 5
 
--- Anti-spam per player per target
 local HIT_COOLDOWN = 0.25
-local lastHit: {[number]: {[Instance]: number}} = {} -- userId -> (target -> time)
+local lastHit: {[number]: {[Instance]: number}} = {}
 
---========================
--- Time helpers
---========================
 local function now(): number
 	return os.clock()
 end
@@ -63,11 +54,7 @@ local function canHit(player: Player, target: Instance): boolean
 	return true
 end
 
---========================
--- Tree target + HP
---========================
 local function resolveTreeTarget(hit: Instance): Instance?
-	-- Prefer model (so you damage one “tree entity” even if it has many parts)
 	local model = hit:FindFirstAncestorOfClass("Model")
 	if model and CollectionService:HasTag(model, TREE_TAG) then
 		return model
@@ -121,7 +108,6 @@ function ResourceSystem.DamageTreeFromHit(player: Player, hit: Instance, damage:
 		return false
 	end
 
-	-- Already broken? Ignore, but treat as handled.
 	if treeTarget:GetAttribute(BROKEN_ATTR) == true then
 		return true
 	end
@@ -134,8 +120,6 @@ function ResourceSystem.DamageTreeFromHit(player: Player, hit: Instance, damage:
 	local hpAfter = math.max(0, hpBefore - damage)
 	setHP(treeTarget, hpAfter)
 
-	TreeWiggle.Wiggle(treeTarget)
-
 	log(
 		"Tree hit:",
 		treeTarget:GetFullName(),
@@ -143,28 +127,45 @@ function ResourceSystem.DamageTreeFromHit(player: Player, hit: Instance, damage:
 		"| HP:", hpBefore, "->", hpAfter
 	)
 
-	-- Optional: per-hit wood goes straight to inventory (not pickups)
+	-- Optional per-hit wood direct-to-inventory
 	if WOOD_PER_HIT > 0 then
-		-- If you keep WOOD_PER_HIT enabled, PickupService should NOT also award for those logs.
-		-- Leave WOOD_PER_HIT at 0 for your current "collect logs to gain wood" design.
 		local InventoryService = require(script.Parent:WaitForChild("InventoryService"))
 		InventoryService.Add(player, "Wood", WOOD_PER_HIT)
 	end
 
-	if hpAfter <= 0 then
-		treeTarget:SetAttribute(BROKEN_ATTR, true)
-		log("Tree BROKEN:", treeTarget:GetFullName())
-
-		local pos = getTreePosition(treeTarget)
-
-		if WOOD_ON_BREAK > 0 then
-			log("Spawning wood logs:", WOOD_ON_BREAK, "at", pos)
-			PickupService.SpawnWoodLogs(pos, WOOD_ON_BREAK)
-		end
-
-		-- Remove the tree entity so it disappears
-		treeTarget:Destroy()
+	-- ===== NON-KILL HIT =====
+	if hpAfter > 0 then
+		-- ✅ sound first, then wiggle (feels “same time”)
+		TreeSound.PlayImpact(treeTarget)
+		TreeWiggle.Wiggle(treeTarget)
+		return true
 	end
+
+	-- ===== KILL HIT =====
+	treeTarget:SetAttribute(BROKEN_ATTR, true)
+
+	local pos = getTreePosition(treeTarget)
+
+	-- ✅ On the kill hit, play sounds at position so they survive Destroy()
+	TreeSound.PlayImpactAt(pos)
+	TreeSound.PlayBreakAt(pos)
+
+	-- Optional: still do a tiny wiggle before disappearing
+	TreeWiggle.Wiggle(treeTarget)
+
+	log("Tree BROKEN:", treeTarget:GetFullName())
+
+	if WOOD_ON_BREAK > 0 then
+		log("Spawning wood logs:", WOOD_ON_BREAK, "at", pos)
+		PickupService.SpawnWoodLogs(pos, WOOD_ON_BREAK)
+	end
+
+	-- ✅ Delay destroy slightly so wiggle reads + audio starts cleanly
+	task.delay(0.12, function()
+		if treeTarget and treeTarget.Parent then
+			treeTarget:Destroy()
+		end
+	end)
 
 	return true
 end
