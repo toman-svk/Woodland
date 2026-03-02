@@ -1,3 +1,6 @@
+-- registers NPCs, handles behaviors
+
+
 -- ServerScriptService/Server/QuestHandler.server.lua
 --!strict
 

@@ -1,4 +1,4 @@
---!strict
+-- per-player data if you keep any separate (optional)--!strict
 -- src/server/InitStats.server.luau
 
 local Players = game:GetService("Players")

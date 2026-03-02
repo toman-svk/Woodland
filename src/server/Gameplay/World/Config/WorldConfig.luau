@@ -1,4 +1,5 @@
--- ServerScriptService/WorldModules/WorldConfig.lua
+--!strict
+-- src/server/Gameplay/World/Config/WorldConfig.luau
 
 local WorldConfig = {}
 

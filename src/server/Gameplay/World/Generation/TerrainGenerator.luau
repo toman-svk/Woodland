@@ -1,13 +1,12 @@
 --!strict
--- ServerScriptService/Server/WorldGenerationModules/GenerateTerrain.luau
+-- src/server/Gameplay/World/Generation/TerrainGenerator.luau
 
 local Workspace = game:GetService("Workspace")
 local Terrain = Workspace.Terrain
 
-local ServerScriptService = game:GetService("ServerScriptService")
-
-local WorldConfig = require(ServerScriptService.Server.WorldModules.WorldConfig)
-local WorldHeight = require(ServerScriptService.Server.WorldModules.WorldHeight)
+local ConfigLocator = require(script.Parent.Parent.Config:WaitForChild("ConfigLocator"))
+local WorldConfig = ConfigLocator.WorldConfig
+local WorldHeight = ConfigLocator.WorldHeight
 
 export type WorldDiffs = {
 	choppedTrees: {[string]: boolean},
@@ -21,35 +20,30 @@ export type WorldSave = {
 	lastSavedAt: number,
 }
 
-local GenerateTerrain = {}
+local TerrainGenerator = {}
 
 local function smoothstep(t: number): number
 	t = math.clamp(t, 0, 1)
 	return t * t * (3 - 2 * t)
 end
 
-local function fillColumn(origin: Vector3, step: number, baseY: number, wx: number, wz: number, height: number, mat: Enum.Material)
+local function fillColumn(origin: Vector3, step: number, baseY: number, localX: number, localZ: number, height: number, mat: Enum.Material)
 	if height <= 0 then
 		return
 	end
 	local centerY = baseY + height / 2
 	Terrain:FillBlock(
-		CFrame.new(origin.X + wx, centerY, origin.Z + wz),
+		CFrame.new(origin.X + localX, centerY, origin.Z + localZ),
 		Vector3.new(step, height, step),
 		mat
 	)
 end
 
-function GenerateTerrain.Build(_root: Folder, origin: Vector3, _rng: Random, _save: WorldSave?): ()
-	-- NOTE:
-	-- This generates terrain at the given origin. If you generate multiple per-player worlds in the SAME server,
-	-- you are creating multiple terrain "islands" far apart. That's OK for small tests, but terrain fill is heavy.
-	-- (Later we can optimize by generating only once per server, or switching to mesh islands.)
+function TerrainGenerator.Build(_root: Folder, origin: Vector3, _rng: Random, _save: WorldSave?): ()
+	local STEP: number = (WorldConfig.STEP :: number?) or 8
+	local areaSize: number = (WorldConfig.AREA_SIZE :: number?) or 800
+	local half: number = areaSize / 2
 
-	local STEP: number = WorldConfig.STEP
-	local half: number = (WorldConfig.AREA_SIZE :: number) / 2
-
-	-- Treat AREA_SIZE as diameter => radius
 	local WORLD_RADIUS: number = half
 
 	local SEA_LEVEL: number = (WorldConfig.SEA_LEVEL :: number?) or 8
@@ -59,13 +53,13 @@ function GenerateTerrain.Build(_root: Folder, origin: Vector3, _rng: Random, _sa
 
 	local BASE_Y: number = (WorldConfig.BASE_Y :: number?) or 0
 
-	-- Spawn hub flatten (local to this world)
+	-- Local spawn hub flatten
 	local SPAWN_X: number = (WorldConfig.SPAWN_CENTER_X :: number?) or 0
 	local SPAWN_Z: number = (WorldConfig.SPAWN_CENTER_Z :: number?) or 0
 	local FLAT_R: number = (WorldConfig.SPAWN_FLAT_RADIUS :: number?) or ((WorldConfig.SPAWN_CLEAR_RADIUS :: number?) or 70)
 	local FLAT_R2: number = FLAT_R * FLAT_R
 
-	-- plateau based on height at local spawn center (but sample heightAt in WORLD coords)
+	-- plateau height sampled in WORLD coords
 	local plateauH: number = WorldHeight.heightAt(origin.X + SPAWN_X, origin.Z + SPAWN_Z)
 
 	local function flatBlendHeight(localX: number, localZ: number, rawH: number): number
@@ -78,7 +72,7 @@ function GenerateTerrain.Build(_root: Folder, origin: Vector3, _rng: Random, _sa
 		end
 
 		local blendWidth = 30
-		local outer = (FLAT_R + blendWidth)
+		local outer = FLAT_R + blendWidth
 		local outer2 = outer * outer
 
 		if d2 >= outer2 then
@@ -92,9 +86,7 @@ function GenerateTerrain.Build(_root: Folder, origin: Vector3, _rng: Random, _sa
 		return plateauH * (1 - t) + rawH * t
 	end
 
-	-- =========================
-	-- 0) Fill ocean block for this world "island"
-	-- =========================
+	-- 0) Ocean
 	local oceanExtent = WORLD_RADIUS + BEACH_WIDTH + OCEAN_PADDING
 	local oceanSize = Vector3.new(oceanExtent * 2, (SEA_LEVEL - SEA_FLOOR), oceanExtent * 2)
 	local oceanCenterY = BASE_Y + (SEA_FLOOR + SEA_LEVEL) / 2
@@ -105,36 +97,31 @@ function GenerateTerrain.Build(_root: Folder, origin: Vector3, _rng: Random, _sa
 		Enum.Material.Water
 	)
 
-	-- =========================
-	-- 1) Generate land + beach
-	-- =========================
+	-- 1) Land + beach
 	local minXZ = -oceanExtent
 	local maxXZ = oceanExtent
 
-	local ROCK_START: number = (WorldConfig.ROCK_START :: number?) or 60
+	local rockStart: number = (WorldConfig.ROCK_START :: number?) or 60
 
 	for lx = minXZ, maxXZ, STEP do
 		for lz = minXZ, maxXZ, STEP do
 			local dist = math.sqrt(lx * lx + lz * lz)
 
-			-- Land
 			if dist <= WORLD_RADIUS then
 				local rawH = WorldHeight.heightAt(origin.X + lx, origin.Z + lz)
 				local h = flatBlendHeight(lx, lz, rawH)
 
 				local mat = Enum.Material.Grass
-				if h > ROCK_START then
+				if h > rockStart then
 					mat = Enum.Material.Rock
 				end
 
 				fillColumn(origin, STEP, BASE_Y, lx, lz, h, mat)
 
-			-- Beach ring
 			elseif dist <= (WORLD_RADIUS + BEACH_WIDTH) then
 				local t = (dist - WORLD_RADIUS) / BEACH_WIDTH
 				t = smoothstep(t)
 
-				-- sample land-edge height by projecting back to radius
 				local projX = lx * (WORLD_RADIUS / dist)
 				local projZ = lz * (WORLD_RADIUS / dist)
 
@@ -150,7 +137,7 @@ function GenerateTerrain.Build(_root: Folder, origin: Vector3, _rng: Random, _sa
 		end
 	end
 
-	print(("[Terrain] Generated island at origin=(%.0f,%.0f) radius=%.0f beach=%d seaLevel=%d plateauH=%.1f flatR=%d"):format(
+	print(("[Terrain] Generated island origin=(%.0f,%.0f) r=%.0f beach=%d sea=%d plateauH=%.1f flatR=%d"):format(
 		origin.X, origin.Z,
 		WORLD_RADIUS,
 		BEACH_WIDTH,
@@ -160,4 +147,4 @@ function GenerateTerrain.Build(_root: Folder, origin: Vector3, _rng: Random, _sa
 	))
 end
 
-return GenerateTerrain
+return TerrainGenerator

@@ -1,0 +1,1 @@
+-- e.g. TREE_TAG, CAVE_TAG, attributes names

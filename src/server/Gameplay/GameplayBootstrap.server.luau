@@ -1,3 +1,5 @@
+-- main entrypoint for gameplay 
+
 -- ServerScriptService/Server/NPC/BlacksmithAnimation.server.lua
 --!strict
 
@@ -19,6 +21,13 @@ local SOUND_VOLUME = 0.9
 local SOUND_MAX_DISTANCE = 60
 local SOUND_SPEED_MIN = 0.98
 local SOUND_SPEED_MAX = 1.03
+
+-- Gameconfig
+
+local ServerScriptService = game:GetService("ServerScriptService")
+local GameConfigService = require(ServerScriptService.Server.Gameplay.GameConfigService)::any
+
+GameConfigService.Init()
 
 -- =========================
 -- Helpers (strict + nil-safe)

@@ -1,7 +1,7 @@
 --!strict
--- src/server/WorldModules/WorldHeight.luau
+-- src/server/Gameplay/World/Config/WorldHeight.luau
 
-local WorldConfig = require(script.Parent:WaitForChild("WorldConfig"))
+local WorldConfig = require(script.Parent.WorldConfig)
 
 type WorldConfigT = {
 	AREA_SIZE: number,
@@ -28,6 +28,8 @@ local function getSeed(): number
 	end
 	return seed
 end
+
+
 
 WorldHeight.getSeed = getSeed
 
@@ -114,6 +116,10 @@ function WorldHeight.heightAt(x: number, z: number): number
 	local base = Config.BASE_HEIGHT + t * Config.HILL_HEIGHT
 
 	return base + mountainBoost(x, z)
+end
+
+WorldHeight.reset = function()
+	mountainCenters = nil
 end
 
 return WorldHeight
