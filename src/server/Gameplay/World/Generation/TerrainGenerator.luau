@@ -8,18 +8,6 @@ local ConfigLocator = require(script.Parent.Parent.Config:WaitForChild("ConfigLo
 local WorldConfig = ConfigLocator.WorldConfig
 local WorldHeight = ConfigLocator.WorldHeight
 
-export type WorldDiffs = {
-	choppedTrees: {[string]: boolean},
-	minedGems: {[string]: boolean},
-}
-
-export type WorldSave = {
-	version: number,
-	seed: number,
-	diffs: WorldDiffs,
-	lastSavedAt: number,
-}
-
 local TerrainGenerator = {}
 
 local function smoothstep(t: number): number
@@ -39,11 +27,13 @@ local function fillColumn(origin: Vector3, step: number, baseY: number, localX: 
 	)
 end
 
-function TerrainGenerator.Build(_root: Folder, origin: Vector3, _rng: Random, _save: WorldSave?): ()
-	local STEP: number = (WorldConfig.STEP :: number?) or 8
+function TerrainGenerator.Build(_root: Folder, origin: Vector3, _rng: Random, _save: any): ()
+	-- Use a smaller voxel step for smoother slopes
+	local STEP: number = (WorldConfig.TERRAIN_STEP :: number?) or 4
+	STEP = math.clamp(STEP, 2, 8)
+
 	local areaSize: number = (WorldConfig.AREA_SIZE :: number?) or 800
 	local half: number = areaSize / 2
-
 	local WORLD_RADIUS: number = half
 
 	local SEA_LEVEL: number = (WorldConfig.SEA_LEVEL :: number?) or 8
@@ -53,36 +43,51 @@ function TerrainGenerator.Build(_root: Folder, origin: Vector3, _rng: Random, _s
 
 	local BASE_Y: number = (WorldConfig.BASE_Y :: number?) or 0
 
-	-- Local spawn hub flatten
 	local SPAWN_X: number = (WorldConfig.SPAWN_CENTER_X :: number?) or 0
 	local SPAWN_Z: number = (WorldConfig.SPAWN_CENTER_Z :: number?) or 0
-	local FLAT_R: number = (WorldConfig.SPAWN_FLAT_RADIUS :: number?) or ((WorldConfig.SPAWN_CLEAR_RADIUS :: number?) or 70)
-	local FLAT_R2: number = FLAT_R * FLAT_R
 
-	-- plateau height sampled in WORLD coords
-	local plateauH: number = WorldHeight.heightAt(origin.X + SPAWN_X, origin.Z + SPAWN_Z)
+	-- ✅ NEW: dedicated hub radius (flat grass)
+	local HUB_R: number =
+		(WorldConfig.SPAWN_HUB_RADIUS :: number?)
+		or (WorldConfig.SPAWN_FLAT_RADIUS :: number?)
+		or ((WorldConfig.SPAWN_CLEAR_RADIUS :: number?) or 70)
 
-	local function flatBlendHeight(localX: number, localZ: number, rawH: number): number
+	local HUB_R2: number = HUB_R * HUB_R
+
+	-- Slope blending ring outside hub so it doesn't become a hard cliff
+	local HUB_BLEND: number = (WorldConfig.SPAWN_HUB_BLEND_WIDTH :: number?) or 40
+	local HUB_OUTER: number = HUB_R + HUB_BLEND
+	local HUB_OUTER2: number = HUB_OUTER * HUB_OUTER
+
+	-- plateau height sampled in WORLD coords at spawn center
+	local plateauH: number
+do
+	local fixed = WorldConfig.SPAWN_HUB_FIXED_GROUND_Y
+	if typeof(fixed) == "number" then
+		plateauH = (fixed :: number) - BASE_Y -- convert absolute Y to "height above BASE_Y"
+	else
+		plateauH = WorldHeight.heightAt(origin.X + SPAWN_X, origin.Z + SPAWN_Z)
+	end
+end
+
+	local function hubBlendHeight(localX: number, localZ: number, rawH: number): number
 		local dx = localX - SPAWN_X
 		local dz = localZ - SPAWN_Z
 		local d2 = dx * dx + dz * dz
 
-		if d2 <= FLAT_R2 then
+		-- ✅ perfect flat inside hub
+		if d2 <= HUB_R2 then
 			return plateauH
 		end
 
-		local blendWidth = 30
-		local outer = FLAT_R + blendWidth
-		local outer2 = outer * outer
-
-		if d2 >= outer2 then
+		-- outside blend ring: normal terrain
+		if d2 >= HUB_OUTER2 then
 			return rawH
 		end
 
+		-- between: smooth blend from flat -> raw
 		local dist = math.sqrt(d2)
-		local t = (dist - FLAT_R) / blendWidth
-		t = smoothstep(t)
-
+		local t = smoothstep((dist - HUB_R) / HUB_BLEND)
 		return plateauH * (1 - t) + rawH * t
 	end
 
@@ -109,24 +114,42 @@ function TerrainGenerator.Build(_root: Folder, origin: Vector3, _rng: Random, _s
 
 			if dist <= WORLD_RADIUS then
 				local rawH = WorldHeight.heightAt(origin.X + lx, origin.Z + lz)
-				local h = flatBlendHeight(lx, lz, rawH)
+				local h = hubBlendHeight(lx, lz, rawH)
 
+				-- ✅ micro jitter only OUTSIDE the hub (keeps hub perfectly flat)
+				do
+					local dx = lx - SPAWN_X
+					local dz = lz - SPAWN_Z
+					local d2 = dx * dx + dz * dz
+					if d2 > HUB_R2 then
+						local micro = math.noise((origin.X + lx) * 0.08, (origin.Z + lz) * 0.08) * 1.5
+						h += micro
+					end
+				end
+
+				-- ✅ force hub area material to grass
 				local mat = Enum.Material.Grass
-				if h > rockStart then
-					mat = Enum.Material.Rock
+				do
+					local dx = lx - SPAWN_X
+					local dz = lz - SPAWN_Z
+					local d2 = dx * dx + dz * dz
+					if d2 > HUB_R2 then
+						if h > rockStart then
+							mat = Enum.Material.Rock
+						end
+					end
 				end
 
 				fillColumn(origin, STEP, BASE_Y, lx, lz, h, mat)
 
 			elseif dist <= (WORLD_RADIUS + BEACH_WIDTH) then
-				local t = (dist - WORLD_RADIUS) / BEACH_WIDTH
-				t = smoothstep(t)
+				local t = smoothstep((dist - WORLD_RADIUS) / BEACH_WIDTH)
 
 				local projX = lx * (WORLD_RADIUS / dist)
 				local projZ = lz * (WORLD_RADIUS / dist)
 
 				local landEdgeH = WorldHeight.heightAt(origin.X + projX, origin.Z + projZ)
-				landEdgeH = flatBlendHeight(projX, projZ, landEdgeH)
+				landEdgeH = hubBlendHeight(projX, projZ, landEdgeH)
 
 				local targetH = SEA_LEVEL - 2
 				local beachH = landEdgeH * (1 - t) + targetH * t
@@ -137,13 +160,8 @@ function TerrainGenerator.Build(_root: Folder, origin: Vector3, _rng: Random, _s
 		end
 	end
 
-	print(("[Terrain] Generated island origin=(%.0f,%.0f) r=%.0f beach=%d sea=%d plateauH=%.1f flatR=%d"):format(
-		origin.X, origin.Z,
-		WORLD_RADIUS,
-		BEACH_WIDTH,
-		SEA_LEVEL,
-		plateauH,
-		FLAT_R
+	print(("[Terrain] Generated island STEP=%d origin=(%.0f,%.0f) r=%.0f beach=%d sea=%d plateauH=%.1f hubR=%d hubBlend=%d"):format(
+		STEP, origin.X, origin.Z, WORLD_RADIUS, BEACH_WIDTH, SEA_LEVEL, plateauH, HUB_R, HUB_BLEND
 	))
 end
 

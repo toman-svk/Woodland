@@ -6,8 +6,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
 
 local shared = ReplicatedStorage:WaitForChild("Shared")
-local dayStarted = shared:WaitForChild("DayStarted") :: RemoteEvent
-local phaseChanged = shared:WaitForChild("PhaseChanged") :: RemoteEvent
+local remotes = shared:WaitForChild("Remotes")
+local dayStarted = remotes:WaitForChild("DayStarted") :: RemoteEvent
+local phaseChanged = remotes:WaitForChild("PhaseChanged") :: RemoteEvent
+
 local audioFolder = shared:WaitForChild("Audio") :: Folder
 
 type Phase = "Day" | "Night"

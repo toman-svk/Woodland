@@ -20,21 +20,38 @@ local Config: WorldConfigT = WorldConfig
 
 local WorldHeight = {}
 
-local function getSeed(): number
-	local seed = workspace:GetAttribute("WorldSeed")
-	if typeof(seed) ~= "number" then
-		seed = math.random(1, 999_999)
-		workspace:SetAttribute("WorldSeed", seed)
-	end
-	return seed
-end
-
-
-
-WorldHeight.getSeed = getSeed
+local currentSeed: number? = nil
 
 -- Two mountain centers per world (deterministic from seed)
 local mountainCenters: { Vector2 }? = nil
+
+local function getSeed(): number
+	-- Preferred: explicit seed (set by WorldService before generation)
+	if currentSeed ~= nil then
+		return currentSeed
+	end
+
+	-- Fallback (Studio safety): read attribute if set
+	local seedAttr = workspace:GetAttribute("WorldSeed")
+	if typeof(seedAttr) == "number" then
+		return seedAttr
+	end
+
+	-- Last resort fallback (still deterministic per session)
+	local s = 123456
+	workspace:SetAttribute("WorldSeed", s)
+	return s
+end
+
+function WorldHeight.SetSeed(seed: number)
+	currentSeed = seed
+	workspace:SetAttribute("WorldSeed", seed)
+	mountainCenters = nil
+end
+
+function WorldHeight.Reset()
+	mountainCenters = nil
+end
 
 local function initMountains()
 	if mountainCenters then
@@ -45,9 +62,8 @@ local function initMountains()
 	local half = Config.AREA_SIZE / 2
 	local rng = Random.new(seed)
 
-	local margin = 120 -- keep peaks away from edges
+	local margin = 120
 
-	-- Spawn hub position (XZ)
 	local spawnX = Config.SPAWN_CENTER_X or 0
 	local spawnZ = Config.SPAWN_CENTER_Z or 0
 	local minDist = Config.MOUNTAIN_SPAWN_BUFFER or 180
@@ -67,14 +83,12 @@ local function initMountains()
 	end
 
 	local function pickOne(): Vector2
-		-- try a bunch of times to find a good spot away from spawn
 		for _ = 1, 80 do
 			local c = randCenter()
 			if farFromSpawn(c.X, c.Y) then
 				return c
 			end
 		end
-		-- fallback (still deterministic, just not guaranteed far)
 		return randCenter()
 	end
 
@@ -83,25 +97,21 @@ end
 
 local function mountainBoost(x: number, z: number): number
 	initMountains()
-
 	local centers = mountainCenters :: { Vector2 }
 
 	local radius = Config.MOUNTAIN_RADIUS or 150
 	local height = Config.MOUNTAIN_HEIGHT or 80
 
 	local boost = 0
-
 	for _, c in ipairs(centers) do
 		local dx = x - c.X
 		local dz = z - c.Y
 		local dist = math.sqrt(dx * dx + dz * dz)
-
 		if dist < radius then
-			local t = 1 - (dist / radius) -- 1 at center -> 0 at edge
+			local t = 1 - (dist / radius)
 			boost += (t * t) * height
 		end
 	end
-
 	return boost
 end
 
@@ -116,10 +126,6 @@ function WorldHeight.heightAt(x: number, z: number): number
 	local base = Config.BASE_HEIGHT + t * Config.HILL_HEIGHT
 
 	return base + mountainBoost(x, z)
-end
-
-WorldHeight.reset = function()
-	mountainCenters = nil
 end
 
 return WorldHeight

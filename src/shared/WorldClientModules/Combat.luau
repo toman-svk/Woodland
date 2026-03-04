@@ -1,5 +1,6 @@
 --!strict
--- src/client/Combat.client.luau
+-- src/shared/WorldClientModules/Combat.client.luau
+-- Combat client module: fires CombatAttack, listens to CombatHit.
 
 local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
@@ -9,8 +10,12 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
-local attackEvent = Shared:WaitForChild("CombatAttack") :: RemoteEvent
-local hitEvent = Shared:WaitForChild("CombatHit") :: RemoteEvent
+local RemotesFolder = Shared:WaitForChild("Remotes")
+
+local GetRemote = require(RemotesFolder:WaitForChild("GetRemote"))
+
+local attackEvent = GetRemote("CombatAttack", "RemoteEvent") :: RemoteEvent
+local hitEvent = GetRemote("CombatHit", "RemoteEvent") :: RemoteEvent
 
 -- Tuning
 local ATTACK_KEY = Enum.KeyCode.F
@@ -29,6 +34,9 @@ local currentTool: Tool? = nil
 local currentAnimObj: Animation? = nil
 local currentTrack: AnimationTrack? = nil
 local currentAnimId: string? = nil
+
+local started = false
+local connections: { RBXScriptConnection } = {}
 
 local function log(...)
 	print("[Combat]", ...)
@@ -109,7 +117,6 @@ local function ensureToolTrack(): AnimationTrack?
 		return nil
 	end
 
-	-- Make sure animator exists
 	animator = animator or getAnimatorForChar(char)
 	local anim = animator
 	if not anim then
@@ -124,13 +131,11 @@ local function ensureToolTrack(): AnimationTrack?
 
 	local animObj = tool:FindFirstChild("SwingAnim")
 	if not animObj or not animObj:IsA("Animation") then
-		-- Tool equipped but doesn't have a SwingAnim
 		clearCachedTrack()
 		currentTool = tool
 		return nil
 	end
 
-	-- Only (re)load when tool or animationId changed
 	local animId = animObj.AnimationId
 	local toolChanged = (tool ~= currentTool)
 	local idChanged = (animId ~= currentAnimId)
@@ -161,10 +166,8 @@ local function ensureToolTrack(): AnimationTrack?
 end
 
 local function bindCharacter(char: Model)
-	-- Avoid WaitForChild typing issues: FindFirstChildOfClass gives correct type
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	if not hum then
-		-- Character might not be fully ready yet; wait briefly then retry once
 		task.defer(function()
 			local hum2 = char:FindFirstChildOfClass("Humanoid")
 			if hum2 then
@@ -183,24 +186,12 @@ local function bindCharacter(char: Model)
 	log("Bound character. animator=", animator ~= nil)
 end
 
-if player.Character then
-	bindCharacter(player.Character)
-end
-player.CharacterAdded:Connect(bindCharacter)
-
 local function playSwing()
 	playSoundOnCharacter(SWING_SOUND_ID, 0.6, 1.0)
 
 	local track = ensureToolTrack()
 	if track then
 		track:Play(0.05, 1, 1.0)
-	else
-		local tool = getEquippedTool()
-		if not tool then
-			log("No tool equipped (SwingAnim not played).")
-		else
-			log("Tool equipped but no SwingAnim Animation found:", tool.Name)
-		end
 	end
 end
 
@@ -254,40 +245,51 @@ end
 local function tryAttack(source: string)
 	local now = os.clock()
 	if now - lastAttack < COOLDOWN then
-		log(("Attack blocked: cooldown (%.2fs left)"):format(COOLDOWN - (now - lastAttack)))
 		return
 	end
 	lastAttack = now
 
-	log("ATTACK fired. source=", source)
 	playSwing()
 	attackEvent:FireServer()
+	-- log("ATTACK fired. source=", source)
 end
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then
+local M = {}
+
+function M.Start()
+	if started then
 		return
 	end
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		-- If a tool is equipped, Tool.Activated will handle it (AxeClient)
-		-- Only allow unarmed attacks here
-		local tool = getEquippedTool()
-		if not tool then
-			tryAttack("MouseButton1_Unarmed")
+	started = true
+
+	if player.Character then
+		bindCharacter(player.Character)
+	end
+	table.insert(connections, player.CharacterAdded:Connect(bindCharacter))
+
+	table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then
+			return
 		end
-	elseif input.KeyCode == ATTACK_KEY then
-		tryAttack("Key_F")
-	end
-end)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			local tool = getEquippedTool()
+			if not tool then
+				tryAttack("MouseButton1_Unarmed")
+			end
+		elseif input.KeyCode == ATTACK_KEY then
+			tryAttack("Key_F")
+		end
+	end))
 
-hitEvent.OnClientEvent:Connect(function(targetModel: Model, damage: number)
-	if typeof(damage) ~= "number" then
-		return
-	end
+	table.insert(connections, hitEvent.OnClientEvent:Connect(function(targetModel: Model, damage: number)
+		if typeof(damage) ~= "number" then
+			return
+		end
+		playSoundOnCharacter(HIT_SOUND_ID, 0.7, 1.0)
+		showDamageNumber(targetModel, damage)
+	end))
 
-	log("HIT CONFIRMED:", targetModel.Name, "damage=", damage)
-	playSoundOnCharacter(HIT_SOUND_ID, 0.7, 1.0)
-	showDamageNumber(targetModel, damage)
-end)
+	log("Combat started.")
+end
 
-log("Combat client loaded. Waiting for input...")
+return M

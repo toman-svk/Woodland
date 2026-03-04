@@ -1,12 +1,15 @@
 --!strict
--- src/client/Sprint.client.luau
+-- src/shared/WorldClientModules/Sprint.luau
 
 local UIS = game:GetService("UserInputService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
-local sprintEvent = Shared:WaitForChild("SprintToggle") :: RemoteEvent
+local RemotesFolder = Shared:WaitForChild("Remotes")
+local GetRemote = require(RemotesFolder:WaitForChild("GetRemote"))
+
+local sprintEvent = GetRemote("SprintToggle", "RemoteEvent") :: RemoteEvent
 
 local NORMAL_SPEED = 16
 local SPRINT_SPEED = 28
@@ -21,10 +24,8 @@ local function log(...)
 end
 
 local function bindCharacter(character: Model)
-	-- FindFirstChildOfClass is typed properly (Humanoid?)
 	local hum = character:FindFirstChildOfClass("Humanoid")
 	if not hum then
-		-- CharacterAdded can fire before humanoid exists; defer one tick
 		task.defer(function()
 			local hum2 = character:FindFirstChildOfClass("Humanoid")
 			if hum2 then
@@ -42,12 +43,6 @@ local function bindCharacter(character: Model)
 	hum.WalkSpeed = NORMAL_SPEED
 	log("Bound character")
 end
-
-if player.Character then
-	bindCharacter(player.Character)
-end
-
-player.CharacterAdded:Connect(bindCharacter)
 
 local function startSprint()
 	local hum = humanoid
@@ -73,26 +68,37 @@ local function stopSprint()
 	log("SPRINT OFF")
 end
 
-UIS.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then
-		return
-	end
-	if input.KeyCode == SPRINT_KEY then
-		startSprint()
-	end
-end)
+local M = {}
+local started = false
 
-UIS.InputEnded:Connect(function(input, gameProcessed)
-	if gameProcessed then
-		return
-	end
-	if input.KeyCode == SPRINT_KEY then
-		stopSprint()
-	end
-end)
+function M.Start()
+	if started then return end
+	started = true
 
-sprintEvent.OnClientEvent:Connect(function(serverSaysSprinting: boolean)
-	if serverSaysSprinting == false then
-		stopSprint()
+	if player.Character then
+		bindCharacter(player.Character)
 	end
-end)
+	player.CharacterAdded:Connect(bindCharacter)
+
+	UIS.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then return end
+		if input.KeyCode == SPRINT_KEY then
+			startSprint()
+		end
+	end)
+
+	UIS.InputEnded:Connect(function(input, gameProcessed)
+		if gameProcessed then return end
+		if input.KeyCode == SPRINT_KEY then
+			stopSprint()
+		end
+	end)
+
+	sprintEvent.OnClientEvent:Connect(function(serverSaysSprinting: boolean)
+		if serverSaysSprinting == false then
+			stopSprint()
+		end
+	end)
+end
+
+return M

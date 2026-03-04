@@ -31,7 +31,7 @@ local PICKUP_SCAN_TICK = 0.15
 -- Wood log visuals & physics
 --========================
 -- Size of log part (Cylinder axis is X, so X = length)
-PickupService.LOG_SIZE = Vector3.new(2.6, 0.7, 0.7)
+PickupService.LOG_SIZE = Vector3.new(7.2, 1.2, 1.2)
 
 PickupService.LOG_MATERIAL = Enum.Material.Wood
 PickupService.LOG_COLOR = Color3.fromRGB(138, 102, 66)

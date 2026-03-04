@@ -2,43 +2,86 @@
 -- src/server/Gameplay/World/Generation/SpawnTrees.luau
 
 local ServerStorage = game:GetService("ServerStorage")
-local Workspace = game:GetService("Workspace")
-local CollectionService = game:GetService("CollectionService")
 
-local ConfigLocator = require(script.Parent.Parent.Config:WaitForChild("ConfigLocator"))
+local ConfigLocator = require(script.Parent.Parent.Config.ConfigLocator)
 local WorldConfig = ConfigLocator.WorldConfig
 local WorldHeight = ConfigLocator.WorldHeight
 
 local SpawnTrees = {}
 
-local function mustFolder(parent: Instance, name: string): Folder
-	local inst = parent:WaitForChild(name)
-	if not inst:IsA("Folder") then
-		error(("Expected %s under %s to be Folder, got %s"):format(name, parent:GetFullName(), inst.ClassName))
+local function anchorModel(model: Model, anchored: boolean)
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored = anchored
+		end
 	end
-	return inst
-end
-
-local function mustModel(parent: Instance, name: string): Model
-	local inst = parent:WaitForChild(name)
-	if not inst:IsA("Model") then
-		error(("Expected %s under %s to be Model, got %s"):format(name, parent:GetFullName(), inst.ClassName))
-	end
-	return inst
 end
 
 local function getOrCreateFolder(parent: Instance, name: string): Folder
-	local f = parent:FindFirstChild(name)
-	if f and f:IsA("Folder") then
-		return f
+	local existing = parent:FindFirstChild(name)
+	if existing and existing:IsA("Folder") then
+		return existing
 	end
-	local nf = Instance.new("Folder")
-	nf.Name = name
-	nf.Parent = parent
-	return nf
+	local f = Instance.new("Folder")
+	f.Name = name
+	f.Parent = parent
+	return f
 end
 
--- Spawn hub avoidance (LOCAL coords)
+local function getTreeTemplates(): {Model}
+	local templates = ServerStorage:FindFirstChild("Templates")
+	if not templates then return {} end
+
+	local trees = templates:FindFirstChild("Trees")
+	if not trees then return {} end
+
+	local list: {Model} = {}
+
+	for _, name in ipairs({ "Tree1", "Tree2", "Tree3", "Tree4" }) do
+		local m = trees:FindFirstChild(name)
+		if m and m:IsA("Model") then
+			table.insert(list, m)
+		end
+	end
+
+	-- fallback: any models inside Trees
+	if #list == 0 then
+		for _, c in ipairs(trees:GetChildren()) do
+			if c:IsA("Model") then
+				table.insert(list, c)
+			end
+		end
+	end
+
+	return list
+end
+
+local function pickTreeTemplate(rng: Random, templates: {Model}): Model?
+	if #templates == 0 then return nil end
+
+	-- Desired ratio: 40/40/10/10 for Tree1..Tree4
+	-- If some are missing, fallback to uniform.
+	if #templates >= 4 then
+		local roll = rng:NextNumber(0, 1)
+		if roll < 0.40 then return templates[1] end
+		if roll < 0.80 then return templates[2] end
+		if roll < 0.90 then return templates[3] end
+		return templates[4]
+	end
+
+	-- fallback uniform
+	return templates[rng:NextInteger(1, #templates)]
+end
+
+local function pivotToBottomOffsetY(model: Model): number
+	-- Works even if pivot is not at the base.
+	local pivotY = model:GetPivot().Position.Y
+	local bbCFrame, bbSize = model:GetBoundingBox()
+	local bbCenterY = bbCFrame.Position.Y
+	local bottomY = bbCenterY - (bbSize.Y / 2)
+	return pivotY - bottomY
+end
+
 local function inSpawnHub(localX: number, localZ: number): boolean
 	local SPAWN_X: number = (WorldConfig.SPAWN_CENTER_X :: number?) or 0
 	local SPAWN_Z: number = (WorldConfig.SPAWN_CENTER_Z :: number?) or 0
@@ -49,225 +92,118 @@ local function inSpawnHub(localX: number, localZ: number): boolean
 end
 
 local function inWorld(localX: number, localZ: number): boolean
-	local areaSize: number = (WorldConfig.AREA_SIZE :: number?) or 800
-	local WORLD_R: number = (WorldConfig.WORLD_RADIUS :: number?) or (areaSize / 2)
+	local WORLD_R: number = (WorldConfig.WORLD_RADIUS :: number?) or ((WorldConfig.AREA_SIZE :: number) / 2)
 	local EDGE_MARGIN: number = (WorldConfig.SPAWN_EDGE_MARGIN :: number?) or 0
-	local r = WORLD_R - EDGE_MARGIN
+	local r = (WORLD_R - EDGE_MARGIN)
 	return (localX * localX + localZ * localZ) <= (r * r)
 end
 
--- =========================
--- Forest tuning (dense)
--- =========================
-local GRID_STEP_MULT = 0.38
-local CLUSTER_CHANCE = 0.95
-local CLUSTER_MIN = 6
-local CLUSTER_MAX = 16
-local CLUSTER_RADIUS_MIN = 8
-local CLUSTER_RADIUS_MAX = 22
-
--- =========================
--- Placement tuning
--- =========================
-local FOOTPRINT_MULT = 0.35
-local MAX_SLOPE_DELTA = 18
-
--- =========================
--- Templates (weighted)
--- =========================
-local treesStorageFolder = mustFolder(mustFolder(ServerStorage, "Templates"), "Trees")
-
-local weightedTrees = {
-	{ model = mustModel(treesStorageFolder, "Tree1"), weight = 60 },
-	{ model = mustModel(treesStorageFolder, "Tree2"), weight = 20 },
-	{ model = mustModel(treesStorageFolder, "Tree3"), weight = 10 },
-	{ model = mustModel(treesStorageFolder, "Tree4"), weight = 10 },
-}
-
-local totalWeight = 0
-for _, entry in ipairs(weightedTrees) do
-	totalWeight += entry.weight
-end
-
-local function pickTreeTemplate(rng: Random): Model
-	local r = rng:NextInteger(1, totalWeight)
-	local acc = 0
-	for _, entry in ipairs(weightedTrees) do
-		acc += entry.weight
-		if r <= acc then
-			return entry.model
-		end
+function SpawnTrees.Build(root: Folder, origin: Vector3, rng: Random, save): number
+	local treeTemplates = getTreeTemplates()
+	if #treeTemplates == 0 then
+		warn("[SpawnTrees] Missing tree templates under ServerStorage/Templates/Trees (Tree1..Tree4).")
+		return 0
 	end
-	return weightedTrees[#weightedTrees].model
-end
-
-local function anchorModel(model: Model, anchored: boolean)
-	for _, d in ipairs(model:GetDescendants()) do
-		if d:IsA("BasePart") then
-			d.Anchored = anchored
-		end
-	end
-end
-
-local function scaleModel(model: Model, scale: number)
-	pcall(function()
-		model:ScaleTo(scale)
-	end)
-end
-
-local function randomScale(rng: Random): number
-	local minS: number = (WorldConfig.TREE_SCALE_MIN :: number?) or 1
-	local baseMaxS: number = (WorldConfig.TREE_SCALE_MAX :: number?) or 1.5
-	local maxS = baseMaxS * 1.5
-	return minS + (maxS - minS) * rng:NextNumber()
-end
-
-local function clearTreeAttributes(tree: Instance)
-	tree:SetAttribute("HP", nil)
-	tree:SetAttribute("MaxHP", nil)
-	tree:SetAttribute("Broken", nil)
-	tree:SetAttribute("Wiggling", nil)
-end
-
-local function getLowestGroundY(worldX: number, worldZ: number, footprintRadius: number): (number, number)
-	local centerH = WorldHeight.heightAt(worldX, worldZ)
-	local minH = centerH
-	local maxH = centerH
-
-	if footprintRadius > 0 then
-		local r = footprintRadius
-		local offsets = {
-			Vector2.new( r,  0),
-			Vector2.new(-r,  0),
-			Vector2.new( 0,  r),
-			Vector2.new( 0, -r),
-			Vector2.new( r,  r),
-			Vector2.new( r, -r),
-			Vector2.new(-r,  r),
-			Vector2.new(-r, -r),
-		}
-
-		for _, off in ipairs(offsets) do
-			local h = WorldHeight.heightAt(worldX + off.X, worldZ + off.Y)
-			if h < minH then minH = h end
-			if h > maxH then maxH = h end
-		end
+	if not treeTemplates then
+		warn("[SpawnTrees] Missing tree template under ServerStorage/Templates. Expected Templates/Trees/Tree (Model).")
+		return 0
 	end
 
-	return minH, maxH
-end
-
-function SpawnTrees.Build(root: Folder, origin: Vector3, rng: Random, _save: any): number
 	local treesFolder = getOrCreateFolder(root, "Trees")
+	local chopped = (save and save.diffs and save.diffs.choppedTrees) or {}
 
-	-- Overlap check against this world root (NOT global)
-	local overlapParams = OverlapParams.new()
-	overlapParams.FilterType = Enum.RaycastFilterType.Include
-	overlapParams.FilterDescendantsInstances = { root }
+	local half: number = ((WorldConfig.AREA_SIZE :: number?) or 800) / 2
+	local BASE_Y: number = (WorldConfig.BASE_Y :: number?) or 0
 
-	local function isSpotClear(cframe: CFrame, size: Vector3): boolean
-		local padding = Vector3.new(1.5, 10, 1.5)
-		local checkSize = size + padding
-		local parts = Workspace:GetPartBoundsInBox(cframe, checkSize, overlapParams)
-		return #parts == 0
-	end
+	local spacing: number = (WorldConfig.TREE_SPACING :: number?) or 12
+	local chance: number = (WorldConfig.TREE_CHANCE :: number?) or 0.35
+	local maxTrees: number = (WorldConfig.MAX_TREES :: number?) or 1200
+	local scaleMin: number = (WorldConfig.TREE_SCALE_MIN :: number?) or 2.0
+	local scaleMax: number = (WorldConfig.TREE_SCALE_MAX :: number?) or 5.0
 
-	local function trySpawnTreeAt(localX: number, localZ: number): boolean
-		if not inWorld(localX, localZ) then return false end
-		if inSpawnHub(localX, localZ) then return false end
 
-		local worldX = origin.X + localX
-		local worldZ = origin.Z + localZ
 
-		-- avoid rocky heights
-		local centerH = WorldHeight.heightAt(worldX, worldZ)
-		local rockStart: number = (WorldConfig.ROCK_START :: number?) or 60
-		if centerH >= (rockStart - 5) then
-			return false
-		end
+	-- 1) Collect candidates across the whole island (no early stop)
+	type Candidate = { x: number, z: number, id: string }
+	local candidates: {Candidate} = {}
 
-		local template = pickTreeTemplate(rng)
-		local tree = template:Clone()
-		tree.Parent = treesFolder
+	-- jitter within each spacing cell so it looks natural (still respects spacing)
+	local jitter = math.max(0, math.floor(spacing * 0.35))
 
-		CollectionService:AddTag(tree, "Tree")
-		clearTreeAttributes(tree)
-		anchorModel(tree, true)
+	for lx = -half, half, spacing do
+		for lz = -half, half, spacing do
+			if not inWorld(lx, lz) then
+				continue
+			end
+			if inSpawnHub(lx, lz) then
+				continue
+			end
+			if rng:NextNumber() > chance then
+				continue
+			end
 
-		local scale = randomScale(rng)
-		scaleModel(tree, scale)
-
-		local _, size = tree:GetBoundingBox()
-		local footprintRadius = math.max(size.X, size.Z) * FOOTPRINT_MULT
-
-		local minH, maxH = getLowestGroundY(worldX, worldZ, footprintRadius)
-		if (maxH - minH) > MAX_SLOPE_DELTA then
-			tree:Destroy()
-			return false
-		end
-
-		local baseY: number = (WorldConfig.BASE_Y :: number?) or 0
-		local groundY = baseY + minH
-
-		local rot = CFrame.Angles(0, math.rad(rng:NextInteger(0, 359)), 0)
-		local pivot = CFrame.new(worldX, groundY + size.Y / 2, worldZ) * rot
-
-		if not isSpotClear(pivot, size) then
-			tree:Destroy()
-			return false
-		end
-
-		tree:PivotTo(pivot)
-		return true
-	end
-
-	-- Spawn loop (LOCAL coords)
-	local half = (((WorldConfig.AREA_SIZE :: number?) or 800) / 2)
-	local treeCount = 0
-	local maxTrees: number = (WorldConfig.MAX_TREES :: number?) or 2000
-
-	local baseSpacing: number = (WorldConfig.TREE_SPACING :: number?) or 6
-	local step = math.max(2, math.floor(baseSpacing * GRID_STEP_MULT))
-	local chance: number = (WorldConfig.TREE_CHANCE :: number?) or 0.6
-
-	for x = -half, half, step do
-		for z = -half, half, step do
-			if treeCount >= maxTrees then break end
-
-			if rng:NextNumber() < chance then
-				local localX = x + rng:NextInteger(-8, 8)
-				local localZ = z + rng:NextInteger(-8, 8)
-
-				if trySpawnTreeAt(localX, localZ) then
-					treeCount += 1
-					if treeCount >= maxTrees then break end
-
-					if rng:NextNumber() < CLUSTER_CHANCE then
-						local extras = rng:NextInteger(CLUSTER_MIN, CLUSTER_MAX)
-						local radius = rng:NextInteger(CLUSTER_RADIUS_MIN, CLUSTER_RADIUS_MAX)
-
-						for _ = 1, extras do
-							if treeCount >= maxTrees then break end
-
-							local angle = rng:NextNumber() * math.pi * 2
-							local r = radius * math.sqrt(rng:NextNumber())
-
-							local cx = localX + math.cos(angle) * r + rng:NextInteger(-4, 4)
-							local cz = localZ + math.sin(angle) * r + rng:NextInteger(-4, 4)
-
-							if trySpawnTreeAt(cx, cz) then
-								treeCount += 1
-							end
-						end
-					end
+			local px = lx
+			local pz = lz
+			if jitter > 0 then
+				px = lx + rng:NextInteger(-jitter, jitter)
+				pz = lz + rng:NextInteger(-jitter, jitter)
+				if not inWorld(px, pz) then
+					continue
+				end
+				if inSpawnHub(px, pz) then
+					continue
 				end
 			end
+
+			local id = ("tree_%d_%d"):format(math.floor(px), math.floor(pz))
+			if chopped[id] then
+				continue
+			end
+
+			table.insert(candidates, { x = px, z = pz, id = id })
 		end
-		if treeCount >= maxTrees then break end
 	end
 
-	print("[SpawnTrees] Spawned trees:", treeCount)
-	return treeCount
+	-- 2) Deterministically shuffle candidates with rng (Fisher–Yates)
+	for i = #candidates, 2, -1 do
+		local j = rng:NextInteger(1, i)
+		candidates[i], candidates[j] = candidates[j], candidates[i]
+	end
+
+	-- 3) Place up to maxTrees spread across island
+	local count = 0
+	local toPlace = math.min(maxTrees, #candidates)
+
+	for i = 1, toPlace do
+		local c = candidates[i]
+		local h = WorldHeight.heightAt(origin.X + c.x, origin.Z + c.z)
+		local groundY = BASE_Y + h
+
+		local template = pickTreeTemplate(rng, treeTemplates)
+		if not template then
+			continue
+		end
+		local templateOffsetToBottom = pivotToBottomOffsetY(template)
+		local tree = template:Clone()
+		tree.Parent = treesFolder
+		tree:SetAttribute("WorldObjectId", c.id)
+		tree:SetAttribute("WorldObjectType", "Tree")
+
+		local rot = CFrame.Angles(0, math.rad(rng:NextInteger(0, 359)), 0)
+		local pivotY = groundY + templateOffsetToBottom
+		tree:PivotTo(CFrame.new(origin.X + c.x, pivotY, origin.Z + c.z) * rot)
+
+		if tree.ScaleTo then
+			local s = rng:NextNumber(scaleMin, scaleMax)
+			tree:ScaleTo(s)
+		end
+
+		anchorModel(tree, true)
+		count += 1
+	end
+
+	print(("[SpawnTrees] Candidates=%d Placed=%d spacing=%d chance=%.2f max=%d"):format(#candidates, count, spacing, chance, maxTrees))
+	return count
 end
 
 return SpawnTrees

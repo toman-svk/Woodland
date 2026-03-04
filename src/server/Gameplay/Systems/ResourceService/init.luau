@@ -2,10 +2,21 @@
 -- ServerScriptService/Server/Systems/ResourceSystem
 
 local CollectionService = game:GetService("CollectionService")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local TreeWiggle = require(script.Parent:WaitForChild("TreeWiggle"))
 local TreeSound = require(script.Parent:WaitForChild("TreeSound"))
 local PickupService = require(script.Parent:WaitForChild("PickupService"))
+
+-- WorldService is Rojo-synced under ServerScriptService/Server/Gameplay/World/Runtime/WorldService
+-- If your folder names differ, adjust this path.
+local WorldService = require(
+	ServerScriptService:WaitForChild("Server")
+		:WaitForChild("Gameplay")
+		:WaitForChild("World")
+		:WaitForChild("Runtime")
+		:WaitForChild("WorldService")
+)
 
 local ResourceSystem = {}
 
@@ -54,6 +65,7 @@ local function canHit(player: Player, target: Instance): boolean
 	return true
 end
 
+-- Always resolve to the tagged tree MODEL if possible.
 local function resolveTreeTarget(hit: Instance): Instance?
 	local model = hit:FindFirstAncestorOfClass("Model")
 	if model and CollectionService:HasTag(model, TREE_TAG) then
@@ -100,6 +112,60 @@ local function getTreePosition(target: Instance): Vector3
 end
 
 --========================
+-- Persistence helpers
+--========================
+local function ensureSaveTables(save: any)
+	-- save: WorldSave
+	if save.diffs == nil then
+		save.diffs = { choppedTrees = {}, minedGems = {} }
+	end
+	if save.diffs.choppedTrees == nil then
+		save.diffs.choppedTrees = {}
+	end
+	if save.diffs.minedGems == nil then
+		save.diffs.minedGems = {}
+	end
+end
+
+local function persistTreeChopped(treeTarget: Instance)
+	-- We expect the tree model to have WorldObjectId set in SpawnTrees
+	local idAttr = treeTarget:GetAttribute("WorldObjectId")
+	if typeof(idAttr) ~= "string" then
+		warn("[ResourceSystem] Tree has no string WorldObjectId attribute; cannot persist:", treeTarget:GetFullName())
+		return
+	end
+	local id = idAttr :: string
+
+	local getSave = WorldService.GetSave
+	if not getSave then
+		warn("[ResourceSystem] GetSave method not available; cannot persist chopped tree:", id)
+		return
+	end
+	local save = getSave()
+	local getWorldId = WorldService.GetWorldId
+	if not getWorldId then
+		warn("[ResourceSystem] GetWorldId method not available; cannot persist chopped tree:", id)
+		return
+	end
+	local worldId = getWorldId()
+	if not save or not worldId then
+		warn("[ResourceSystem] No world/save available; cannot persist chopped tree:", id)
+		return
+	end
+
+	ensureSaveTables(save);
+
+	-- Mark as chopped + request autosave
+	(save.diffs.choppedTrees :: {[string]: boolean})[id] = true
+	local markDirty = WorldService.MarkDirty
+	if markDirty then
+		markDirty()
+	end
+
+	log("Persisted chopped tree:", id, "worldId=", worldId)
+end
+
+--========================
 -- Public API
 --========================
 function ResourceSystem.DamageTreeFromHit(player: Player, hit: Instance, damage: number): boolean
@@ -135,7 +201,6 @@ function ResourceSystem.DamageTreeFromHit(player: Player, hit: Instance, damage:
 
 	-- ===== NON-KILL HIT =====
 	if hpAfter > 0 then
-		-- ✅ sound first, then wiggle (feels “same time”)
 		TreeSound.PlayImpact(treeTarget)
 		TreeWiggle.Wiggle(treeTarget)
 		return true
@@ -144,13 +209,14 @@ function ResourceSystem.DamageTreeFromHit(player: Player, hit: Instance, damage:
 	-- ===== KILL HIT =====
 	treeTarget:SetAttribute(BROKEN_ATTR, true)
 
+	-- ✅ PERSIST BEFORE DESTROY
+	persistTreeChopped(treeTarget)
+
 	local pos = getTreePosition(treeTarget)
 
-	-- ✅ On the kill hit, play sounds at position so they survive Destroy()
 	TreeSound.PlayImpactAt(pos)
 	TreeSound.PlayBreakAt(pos)
 
-	-- Optional: still do a tiny wiggle before disappearing
 	TreeWiggle.Wiggle(treeTarget)
 
 	log("Tree BROKEN:", treeTarget:GetFullName())
@@ -160,7 +226,6 @@ function ResourceSystem.DamageTreeFromHit(player: Player, hit: Instance, damage:
 		PickupService.SpawnWoodLogs(pos, WOOD_ON_BREAK)
 	end
 
-	-- ✅ Delay destroy slightly so wiggle reads + audio starts cleanly
 	task.delay(0.12, function()
 		if treeTarget and treeTarget.Parent then
 			treeTarget:Destroy()

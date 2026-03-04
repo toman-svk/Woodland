@@ -5,12 +5,13 @@
 local WorldGenerator = {}
 
 export type WorldSave = {
-	seed: number?, -- if nil, will be created and written back
+	seed: number?,
 }
 
 export type BuildResult = {
 	terrain: boolean,
-	spawnHub: number?,
+	spawnHub: number,
+	spawnCFrame: CFrame?, -- ✅ exposed for teleport
 	caves: number,
 	gems: number,
 	trees: number,
@@ -36,24 +37,14 @@ local function ensureFolder(parent: Instance, name: string): Folder
 	return nf
 end
 
-type BuildFn = (root: Folder, origin: Vector3, rng: Random, save: WorldSave) -> unknown
-type BuildModule = { Build: BuildFn }
-
-local function safeBuild(stepName: string, mod: unknown, root: Folder, origin: Vector3, rng: Random, save: WorldSave): unknown
-	if type(mod) ~= "table" then
-		warn(("[WorldGenerator] %s is not a table module. Skipping."):format(stepName))
-		return nil
-	end
-
-	local m = mod :: any
-	local build = m.Build
-	if type(build) ~= "function" then
+local function safeBuild(stepName: string, mod: any, root: Folder, origin: Vector3, rng: Random, save: WorldSave): any
+	if type(mod) ~= "table" or type(mod.Build) ~= "function" then
 		warn(("[WorldGenerator] %s has no Build(root, origin, rng, save). Skipping."):format(stepName))
 		return nil
 	end
 
 	local ok, result = pcall(function()
-		return (build :: BuildFn)(root, origin, rng, save)
+		return mod.Build(root, origin, rng, save)
 	end)
 
 	if not ok then
@@ -64,31 +55,28 @@ local function safeBuild(stepName: string, mod: unknown, root: Folder, origin: V
 	return result
 end
 
--- Require sibling modules by Instance (safe for Luau analyzer + Rojo)
 local folder = script.Parent
-
-local TerrainGenerator = require(mustModule(folder, "TerrainGenerator"))::any
-local SpawnHubRuntime = require(mustModule(folder, "SpawnHubRuntime"))::any
-local SpawnCaves = require(mustModule(folder, "SpawnCaves"))::any
-local SpawnGems = require(mustModule(folder, "SpawnGems"))::any
-local SpawnTrees = require(mustModule(folder, "SpawnTrees"))::any
-local SpawnCaveSkeletons = require(mustModule(folder, "SpawnCaveSkeletons"))::any
+local TerrainGenerator = require(mustModule(folder, "TerrainGenerator")) :: any
+local SpawnCaves = require(mustModule(folder, "SpawnCaves")) :: any
+local SpawnGems = require(mustModule(folder, "SpawnGems")) :: any
+local SpawnTrees = require(mustModule(folder, "SpawnTrees")) :: any
+local SpawnCaveSkeletons = require(mustModule(folder, "SpawnCaveSkeletons")) :: any
+local SpawnHubRuntime = require(mustModule(folder, "SpawnHubRuntime")) :: any
 
 function WorldGenerator.Build(root: Folder, origin: Vector3, rng: Random, save: WorldSave): BuildResult
-	-- Ensure common folders exist (modules may also do it; harmless)
 	ensureFolder(root, "Caves")
 	ensureFolder(root, "Gems")
 	ensureFolder(root, "Trees")
 	ensureFolder(root, "Enemies")
 
-	-- Stabilize seed if missing (important for determinism + saving)
 	if save.seed == nil then
 		save.seed = rng:NextInteger(1, 2_000_000_000)
 	end
 
 	local result: BuildResult = {
 		terrain = false,
-		spawnHub = nil,
+		spawnHub = 0,
+		spawnCFrame = nil,
 		caves = 0,
 		gems = 0,
 		trees = 0,
@@ -96,48 +84,54 @@ function WorldGenerator.Build(root: Folder, origin: Vector3, rng: Random, save: 
 	}
 
 	-- 1) Terrain
-	do
-		local r = safeBuild("Terrain", TerrainGenerator, root, origin, rng, save)
-		result.terrain = (r ~= nil)
-	end
+	safeBuild("Terrain", TerrainGenerator, root, origin, rng, save)
+	result.terrain = true
 
-	-- 2) SpawnHub Template (your hand-built stuff)
+	-- 2) Spawn hub (ONLY ONCE) + capture SpawnLocation
 	do
-		local r = safeBuild("SpawnHubRuntime", SpawnHubRuntime, root, origin, rng, save)
-		if type(r) == "number" then
-			result.spawnHub = r
+		local hubRes = safeBuild("SpawnHubRuntime", SpawnHubRuntime, root, origin, rng, save)
+		if type(hubRes) == "table" then
+			local t = hubRes :: any
+			if type(t.count) == "number" then
+				result.spawnHub = t.count
+			end
+			if typeof(t.spawnCFrame) == "CFrame" then
+				result.spawnCFrame = t.spawnCFrame
+			end
+		elseif type(hubRes) == "number" then
+			result.spawnHub = hubRes
 		end
 	end
 
 	-- 3) Caves
 	do
-		local r = safeBuild("Caves", SpawnCaves, root, origin, rng, save)
-		if type(r) == "number" then
-			result.caves = r
+		local cavesCount = safeBuild("Caves", SpawnCaves, root, origin, rng, save)
+		if type(cavesCount) == "number" then
+			result.caves = cavesCount
 		end
 	end
 
-	-- 4) Gems (depends on caves)
+	-- 4) Gems
 	do
-		local r = safeBuild("Gems", SpawnGems, root, origin, rng, save)
-		if type(r) == "number" then
-			result.gems = r
+		local gemsCount = safeBuild("Gems", SpawnGems, root, origin, rng, save)
+		if type(gemsCount) == "number" then
+			result.gems = gemsCount
 		end
 	end
 
 	-- 5) Trees
 	do
-		local r = safeBuild("Trees", SpawnTrees, root, origin, rng, save)
-		if type(r) == "number" then
-			result.trees = r
+		local treesCount = safeBuild("Trees", SpawnTrees, root, origin, rng, save)
+		if type(treesCount) == "number" then
+			result.trees = treesCount
 		end
 	end
 
-	-- 6) Enemies (depends on caves)
+	-- 6) Enemies
 	do
-		local r = safeBuild("CaveSkeletons", SpawnCaveSkeletons, root, origin, rng, save)
-		if type(r) == "number" then
-			result.enemies = r
+		local enemiesCount = safeBuild("CaveSkeletons", SpawnCaveSkeletons, root, origin, rng, save)
+		if type(enemiesCount) == "number" then
+			result.enemies = enemiesCount
 		end
 	end
 
