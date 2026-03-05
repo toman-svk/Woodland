@@ -1,18 +1,16 @@
 --!strict
 -- src/server/Lobby/LobbyBootstrap.server.luau
--- Lobby place server bootstrap:
--- - ensures LobbyUI remotes exist
--- - implements GetWorlds / CreateWorld / DeleteWorld RemoteFunctions
--- - DOES NOT auto-teleport (portal/menu will drive that later)
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
+local TeleportService = game:GetService("TeleportService")
 
 -- >>> YOUR PLACE IDS <<<
 local LOBBY_PLACE_ID = 131782889117139
+local GAMEPLAY_PLACE_ID = 74640557554115
 
 -- Only run in Lobby
 if game.PlaceId ~= LOBBY_PLACE_ID then
@@ -20,7 +18,6 @@ if game.PlaceId ~= LOBBY_PLACE_ID then
 end
 
 local function newSeed(): number
-	-- stable random seed per world (stored in datastore)
 	return Random.new():NextInteger(1, 2_000_000_000)
 end
 
@@ -68,10 +65,11 @@ local lobbyUI = getOrCreateFolder(remotesRoot, "LobbyUI")
 -- You already have OpenWorldMenu here:
 local _openWorldMenu = getOrCreateRemoteEvent(lobbyUI, "OpenWorldMenu")
 
--- New RFs used by the UI:
+-- RFs used by the UI:
 local getWorldsRF = getOrCreateRemoteFunction(lobbyUI, "GetWorlds")
 local createWorldRF = getOrCreateRemoteFunction(lobbyUI, "CreateWorld")
 local deleteWorldRF = getOrCreateRemoteFunction(lobbyUI, "DeleteWorld")
+local joinWorldRF = getOrCreateRemoteFunction(lobbyUI, "JoinWorld") -- ✅ ensure it exists
 
 -- =========================
 -- Data model
@@ -81,12 +79,12 @@ export type WorldInfo = {
 	id: string,
 	name: string,
 	createdAt: number,
-    seed: number,
+	seed: number,
 }
 
 type WorldsBlob = {
 	version: number,
-	worlds: {WorldInfo},
+	worlds: { WorldInfo },
 }
 
 local WORLDS_VERSION = 1
@@ -102,16 +100,14 @@ end
 -- Storage
 -- =========================
 
--- Use DataStore in live; in Studio, allow in-memory fallback.
 local WORLDS_STORE = DataStoreService:GetDataStore("LobbyWorlds_v1")
-local mem: {[number]: WorldsBlob} = {}
+local mem: { [number]: WorldsBlob } = {}
 
 local function keyForUser(userId: number): string
 	return ("u_%d_worlds"):format(userId)
 end
 
 local function loadWorlds(userId: number): WorldsBlob
-	-- Studio fallback
 	if RunService:IsStudio() then
 		if mem[userId] == nil then
 			mem[userId] = defaultBlob()
@@ -142,7 +138,6 @@ local function loadWorlds(userId: number): WorldsBlob
 end
 
 local function saveWorlds(userId: number, blob: WorldsBlob): boolean
-	-- Studio fallback
 	if RunService:IsStudio() then
 		mem[userId] = blob
 		return true
@@ -170,7 +165,6 @@ local function sanitizeName(name: any): (string?, string?)
 		return nil, "Name must be a string."
 	end
 
-	-- trim
 	name = name:gsub("^%s+", ""):gsub("%s+$", "")
 	if #name < 2 then
 		return nil, "Name too short (min 2 chars)."
@@ -178,8 +172,6 @@ local function sanitizeName(name: any): (string?, string?)
 	if #name > 24 then
 		return nil, "Name too long (max 24 chars)."
 	end
-
-	-- basic “safe” characters (you can relax later)
 	if name:match("[\r\n\t]") then
 		return nil, "Invalid characters in name."
 	end
@@ -187,13 +179,28 @@ local function sanitizeName(name: any): (string?, string?)
 	return name, nil
 end
 
-local function findWorldIndex(worlds: {WorldInfo}, id: string): number?
+local function findWorldIndex(worlds: { WorldInfo }, id: string): number?
 	for i, w in ipairs(worlds) do
 		if w.id == id then
 			return i
 		end
 	end
 	return nil
+end
+
+local function getWorldById(userId: number, worldId: string): WorldInfo?
+	local blob = loadWorlds(userId)
+	for _, w in ipairs(blob.worlds) do
+		if w.id == worldId then
+			return w
+		end
+	end
+	return nil
+end
+
+local function ownsWorld(userId: number, worldId: string): boolean
+	local blob = loadWorlds(userId)
+	return findWorldIndex(blob.worlds, worldId) ~= nil
 end
 
 -- =========================
@@ -229,17 +236,16 @@ createWorldRF.OnServerInvoke = function(player: Player, nameArg: any)
 
 	local blob = loadWorlds(player.UserId)
 
-	-- optional cap
 	if #blob.worlds >= 20 then
 		return { ok = false, error = "World limit reached (20)." }
 	end
 
-    local newWorld: WorldInfo = {
-        id = HttpService:GenerateGUID(false),
-        name = name,
-        createdAt = os.time(),
-        seed = newSeed(), -- ✅ NEW
-    }
+	local newWorld: WorldInfo = {
+		id = HttpService:GenerateGUID(false),
+		name = name,
+		createdAt = os.time(),
+		seed = newSeed(),
+	}
 
 	table.insert(blob.worlds, newWorld)
 
@@ -270,32 +276,20 @@ deleteWorldRF.OnServerInvoke = function(player: Player, worldIdArg: any)
 	return { ok = true }
 end
 
--- JoinWorld (RemoteFunction)
-local TeleportService = game:GetService("TeleportService")
-
--- make sure these IDs match your real place ids
-local GAMEPLAY_PLACE_ID = 74640557554115
-
-local function ownsWorld(userId: number, worldId: string): boolean
-	local blob = loadWorlds(userId)
-	return findWorldIndex(blob.worlds, worldId) ~= nil
-end
-
-local joinWorldRF = lobbyUI:WaitForChild("JoinWorld") :: RemoteFunction
-
-joinWorldRF.OnServerInvoke = function(player: Player, worldId: string)
-	-- basic validation
+joinWorldRF.OnServerInvoke = function(player: Player, worldId: any)
 	if typeof(worldId) ~= "string" or #worldId < 3 then
 		return { ok = false, error = "Invalid world id." }
 	end
 
-	-- IMPORTANT: verify the world belongs to this player
-	-- Use the same data source you use for GetWorlds (your datastore schema)
 	if not ownsWorld(player.UserId, worldId) then
 		return { ok = false, error = "You don't own this world." }
 	end
 
-	-- Reserve a fresh private server for Gameplay
+	local w = getWorldById(player.UserId, worldId)
+	if not w then
+		return { ok = false, error = "World not found." }
+	end
+
 	local okReserve, reserveCodeOrErr = pcall(function()
 		return TeleportService:ReserveServer(GAMEPLAY_PLACE_ID)
 	end)
@@ -304,37 +298,21 @@ joinWorldRF.OnServerInvoke = function(player: Player, worldId: string)
 	end
 	local reserveCode = reserveCodeOrErr :: string
 
-    
+	print("[LobbyBootstrap] Teleporting to world:", worldId, "seed:", w.seed)
 
-	-- Teleport with TeleportData so Gameplay place loads correct worldId
-	local function getWorldById(userId: number, worldId: string): WorldInfo?
-		local blob = loadWorlds(userId)
-		for _, w in ipairs(blob.worlds) do
-			if w.id == worldId then
-				return w
-			end
-		end
-		return nil
-	end
-
-	local w = getWorldById(player.UserId, worldId)
-	if not w then
-		return { ok = false, error = "You don't own this world." }
-	end
-
-    print("[LobbyBootstrap] Teleporting to world:", worldId, "seed:", w.seed)
-
-	local options = Instance.new("TeleportOptions")
-	options:SetTeleportData({
+	-- ✅ IMPORTANT: TeleportData is passed as the 5th argument (teleportData), not TeleportOptions
+	local teleportData = {
 		worldId = worldId,
 		ownerUserId = player.UserId,
 		kind = "World",
-		seed = w.seed, -- ✅ NEW
-	})
+		seed = w.seed,
+	}
 
 	local okTp, tpErr = pcall(function()
-		TeleportService:TeleportToPrivateServer(GAMEPLAY_PLACE_ID, reserveCode, { player }, options)
+		-- 4th arg is spawnName (optional), 5th arg is teleportData
+		TeleportService:TeleportToPrivateServer(GAMEPLAY_PLACE_ID, reserveCode, { player }, nil, teleportData)
 	end)
+
 	if not okTp then
 		return { ok = false, error = "Teleport failed: " .. tostring(tpErr) }
 	end
@@ -342,7 +320,6 @@ joinWorldRF.OnServerInvoke = function(player: Player, worldId: string)
 	return { ok = true }
 end
 
--- Optional: warm up cache in Studio
 Players.PlayerAdded:Connect(function(player)
 	if RunService:IsStudio() then
 		loadWorlds(player.UserId)
