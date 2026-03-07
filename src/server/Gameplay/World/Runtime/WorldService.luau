@@ -1,7 +1,5 @@
 --!strict
 -- src/server/Gameplay/World/Runtime/WorldService.luau
--- Owns the single world runtime inside the Gameplay place (private server).
--- Loads save by worldId (TeleportData), generates the world once, autosaves.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -14,7 +12,6 @@ local GAMEPLAY_PLACE_ID = 74640557554115
 
 -- Only run in Gameplay place
 if game.PlaceId ~= GAMEPLAY_PLACE_ID then
-	-- Return a dummy module so requires don't explode if Rojo syncs it everywhere
 	return {}
 end
 
@@ -22,15 +19,20 @@ local WorldIds = require(script.Parent:WaitForChild("WorldIds"))
 local WorldGenerator = require(script.Parent.Parent:WaitForChild("Generation"):WaitForChild("WorldGenerator"))
 local WorldPersistence = require(script.Parent.Parent.Parent:WaitForChild("Persistence"):WaitForChild("WorldPersistence"))
 
+
 export type WorldDiffs = {
 	choppedTrees: {[string]: boolean},
 	minedGems: {[string]: boolean},
 }
 
+export type ItemMap = {[string]: number}
+export type InventoriesMap = {[string]: ItemMap}
+
 export type WorldSave = {
 	version: number,
-	seed: number?, -- IMPORTANT: set by ensureSeed() before any save
+	seed: number?,
 	diffs: WorldDiffs,
+	inventories: InventoriesMap,
 	lastSavedAt: number,
 }
 
@@ -42,8 +44,6 @@ export type WorldRuntime = {
 	generated: Folder,
 	origin: Vector3,
 	rng: Random,
-
-	-- ✅ NEW: spawn point returned from SpawnHubRuntime (SpawnLocation in template)
 	spawnCFrame: CFrame?,
 }
 
@@ -59,7 +59,7 @@ end
 local current: WorldRuntime? = nil
 local dirty = false
 
-local AUTOSAVE_PERIOD = 30 -- seconds
+local AUTOSAVE_PERIOD = 30
 local lastSaveClock = 0.0
 
 local function getOrCreateFolder(parent: Instance, name: string): Folder
@@ -83,9 +83,7 @@ local function destroyCurrentWorld()
 end
 
 local function createWorldFolders(worldId: string): (Folder, Folder)
-	-- /Workspace/Worlds/<worldId>/Generated
 	local root = getOrCreateFolder(worldsFolder :: Folder, worldId)
-	-- clean rebuild each server start (this is fine; persistence is in DataStore)
 	for _, c in ipairs(root:GetChildren()) do
 		c:Destroy()
 	end
@@ -97,7 +95,6 @@ local function createWorldFolders(worldId: string): (Folder, Folder)
 	return root, generated
 end
 
--- ✅ Updated: prefer spawnCFrame returned from SpawnHubRuntime (SpawnLocation in template)
 local function teleportPlayerToSpawn(player: Player, origin: Vector3, spawnCFrame: CFrame?)
 	local spawnX = (WorldConfig.SPAWN_CENTER_X or 0)
 	local spawnZ = (WorldConfig.SPAWN_CENTER_Z or 0)
@@ -109,14 +106,11 @@ local function teleportPlayerToSpawn(player: Player, origin: Vector3, spawnCFram
 			return
 		end
 
-		-- ✅ Use SpawnLocation if we have it
 		if spawnCFrame ~= nil then
-			-- small lift so you don’t collide with the pad
 			hrp.CFrame = spawnCFrame + Vector3.new(0, 5, 0)
 			return
 		end
 
-		-- Fallback: sample heightAt in WORLD coords (origin offset + local spawn)
 		local h = WorldHeight.heightAt(origin.X + spawnX, origin.Z + spawnZ)
 		local groundY = baseY + h
 		hrp.CFrame = CFrame.new(origin.X + spawnX, groundY + 6, origin.Z + spawnZ)
@@ -128,7 +122,7 @@ local function teleportPlayerToSpawn(player: Player, origin: Vector3, spawnCFram
 	player.CharacterAdded:Connect(place)
 end
 
-local function extractTeleportData(player: Player): ({[string]: any}?, string?)
+local function extractTeleportData(player: Player): ({ [string]: any }?, string?)
 	local joinData = player:GetJoinData()
 	local tp = joinData.TeleportData
 	if tp == nil then
@@ -137,17 +131,25 @@ local function extractTeleportData(player: Player): ({[string]: any}?, string?)
 	if type(tp) ~= "table" then
 		return nil, "TeleportData not a table"
 	end
-	return tp :: {[string]: any}, nil
+	return tp :: { [string]: any }, nil
 end
 
-local function ensureSeed(save: WorldSave): number
-	if save.seed ~= nil then
-		return save.seed
+local function ensureSeed(save: WorldSave, tpSeed: number?): number
+	-- Existing save always wins
+	if typeof(save.seed) == "number" then
+		return save.seed :: number
 	end
-	-- Stable enough: seed assigned once and then saved
-	local newSeed = Random.new():NextInteger(1, 2_000_000_000)
-	save.seed = newSeed
-	return newSeed
+
+	-- If Lobby provided seed, adopt it
+	if typeof(tpSeed) == "number" then
+		save.seed = tpSeed
+		return tpSeed
+	end
+
+	-- Last resort (should be rare if Lobby always provides a seed)
+	local newS = Random.new():NextInteger(1, 2_000_000_000)
+	save.seed = newS
+	return newS
 end
 
 local function bootstrapFromFirstPlayer(firstPlayer: Player)
@@ -155,7 +157,6 @@ local function bootstrapFromFirstPlayer(firstPlayer: Player)
 
 	local worldId: string
 	local ownerUserId: number
-	local RunService = game:GetService("RunService")
 
 	if tp and type(tp.worldId) == "string" then
 		worldId = tp.worldId
@@ -169,53 +170,37 @@ local function bootstrapFromFirstPlayer(firstPlayer: Player)
 		end
 	end
 
-	-- Load save (by worldId)
+	local tpSeed: number? = nil
+	if tp and type((tp :: any).seed) == "number" then
+		tpSeed = (tp :: any).seed :: number
+	end
+
+	-- Load save
 	local save = WorldPersistence.Load(worldId) :: WorldSave
 
-		-- If Lobby provided a seed and the save is new/seedless, adopt it
-	if tp and typeof((tp :: any).seed) == "number" then
-		local tpSeed = (tp :: any).seed :: number
-		if save.seed == nil or typeof(save.seed) ~= "number" then
-			save.seed = tpSeed
-		end
+	-- Seed selection
+	local seed = ensureSeed(save, tpSeed)
+
+	-- If we adopted seed (meaning save had none), persist it immediately
+	if tpSeed ~= nil and (save.seed == tpSeed) then
+		WorldPersistence.Save(worldId, save :: any)
 	end
 
-	-- Ensure seed
-	local adoptedSeed = false
-
-	if tp and typeof((tp :: any).seed) == "number" then
-		local tpSeed = (tp :: any).seed :: number
-		if save.seed == nil then
-			save.seed = tpSeed
-			adoptedSeed = true
-		end
-	end
-
-	local seed = ensureSeed(save)
-	
 	print("========== WORLD BOOTSTRAP ==========")
 	print("[WorldService] Player:", firstPlayer.Name)
 	print("[WorldService] WorldId:", worldId)
 	print("[WorldService] OwnerUserId:", ownerUserId)
-	print("[WorldService] Seed:", seed)
-	if tp then
-		print("[WorldService] TeleportData.seed:", tp.seed)
-	end
+	print("[WorldService] Save.seed:", tostring(save.seed))
+	print("[WorldService] TeleportData.seed:", tostring(tpSeed))
+	print("[WorldService] Using seed:", seed)
 	print("=====================================")
-
-	if adoptedSeed then
-		WorldPersistence.Save(worldId, save :: any)
-	end
 
 	-- Create folders
 	destroyCurrentWorld()
 	local root, generated = createWorldFolders(worldId)
 
-	-- This server has ONE world at origin (0,0,0)
 	local origin = Vector3.new(0, 0, 0)
 	local rng = Random.new(seed)
-
-
 
 	root:SetAttribute("WorldId", worldId)
 	root:SetAttribute("OwnerUserId", ownerUserId)
@@ -223,11 +208,9 @@ local function bootstrapFromFirstPlayer(firstPlayer: Player)
 
 	WorldHeight.SetSeed(seed)
 
-	-- Generate
 	print(("[WorldService] Generating worldId=%s seed=%d ..."):format(worldId, seed))
 	local buildResult = WorldGenerator.Build(generated, origin, rng, save)
 
-	-- ✅ Pull spawnCFrame out of buildResult if present
 	local spawnCFrame: CFrame? = nil
 	do
 		local anyRes = buildResult :: any
@@ -249,11 +232,9 @@ local function bootstrapFromFirstPlayer(firstPlayer: Player)
 		spawnCFrame = spawnCFrame,
 	}
 
-	-- Teleport player in
 	teleportPlayerToSpawn(firstPlayer, origin, spawnCFrame)
 end
 
--- Public API for other systems
 function WorldService.GetWorldId(): string?
 	return if current then current.worldId else nil
 end
@@ -266,9 +247,7 @@ function WorldService.MarkDirty()
 	dirty = true
 end
 
--- Bootstrap entrypoint (called by GameplayBootstrap.server.luau)
 function WorldService.Bootstrap()
-	-- Wait for first player to arrive so we can read TeleportData
 	local booted = false
 
 	Players.PlayerAdded:Connect(function(player)
@@ -276,14 +255,12 @@ function WorldService.Bootstrap()
 			booted = true
 			bootstrapFromFirstPlayer(player)
 		else
-			-- Server already has a world; place player at the stored spawn
 			if current then
 				teleportPlayerToSpawn(player, current.origin, current.spawnCFrame)
 			end
 		end
 	end)
 
-	-- Autosave loop
 	task.spawn(function()
 		while true do
 			task.wait(2)
@@ -298,7 +275,7 @@ function WorldService.Bootstrap()
 				lastSaveClock = now
 
 				current.save.lastSavedAt = os.time()
-				WorldPersistence.Save(current.worldId, current.save)
+				WorldPersistence.Save(current.worldId, current.save :: any)
 				print("[WorldService] Autosaved:", current.worldId)
 			end
 		end
@@ -307,7 +284,7 @@ function WorldService.Bootstrap()
 	game:BindToClose(function()
 		if current then
 			current.save.lastSavedAt = os.time()
-			WorldPersistence.Save(current.worldId, current.save)
+			WorldPersistence.Save(current.worldId, current.save :: any)
 		end
 	end)
 

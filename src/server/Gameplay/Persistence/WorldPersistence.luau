@@ -1,49 +1,42 @@
 --!strict
 -- src/server/Gameplay/Persistence/WorldPersistence.luau
--- DataStore-backed persistence by worldId (string).
--- Minimal schema for now: seed + diffs (chopped trees / mined gems).
 
 local DataStoreService = game:GetService("DataStoreService")
 
 local WorldPersistence = {}
 
 export type WorldDiffs = {
-	choppedTrees: { [string]: boolean },
-	minedGems: { [string]: boolean },
+	choppedTrees: {[string]: boolean},
+	minedGems: {[string]: boolean},
 }
+
+export type ItemMap = {[string]: number}
+export type InventoriesMap = {[string]: ItemMap}
 
 export type WorldSave = {
 	version: number,
 	seed: number?,
 	diffs: WorldDiffs,
+	inventories: InventoriesMap,
 	lastSavedAt: number,
 }
 
 local STORE_NAME = "WorldSaves_v1"
 local store = DataStoreService:GetDataStore(STORE_NAME)
 
-
--- src/server/Gameplay/Persistence/WorldPersistence.luau
-
 local function newSave(seedOverride: number?): WorldSave
-	-- Force a non-nil number for strict typing
-	local seed: number
-	if seedOverride ~= nil then
-		seed = seedOverride
-	else
-		seed = Random.new():NextInteger(1, 2_000_000_000)
-	end
-
-	-- Also explicitly type diffs so Luau doesn't infer overly-wide types
 	local diffs: WorldDiffs = {
 		choppedTrees = {} :: {[string]: boolean},
 		minedGems = {} :: {[string]: boolean},
 	}
 
+	local inventories: InventoriesMap = {} :: InventoriesMap
+
 	local save: WorldSave = {
 		version = 1,
-		seed = seed,
+		seed = seedOverride,
 		diffs = diffs,
+		inventories = inventories,
 		lastSavedAt = os.time(),
 	}
 
@@ -61,55 +54,53 @@ function WorldPersistence.Load(worldId: string): WorldSave
 	end
 
 	if type(data) ~= "table" then
-        -- ✅ return a blank save WITHOUT choosing a seed here
-        return {
-            version = 1,
-            seed = nil,
-            diffs = {
-                choppedTrees = {} :: {[string]: boolean},
-                minedGems = {} :: {[string]: boolean},
-            },
-            lastSavedAt = 0,
-        }
-    end
-
-
-
-	local t = data :: { [any]: any }
-
-	local seed = t.seed
-	if type(seed) ~= "number" then
 		return newSave(nil)
 	end
 
-    print("[WorldPersistence] Loaded world:", worldId, "seed:", seed)
+	local t = data :: {[any]: any}
 
-	local diffsAny = t.diffs
 	local diffs: WorldDiffs = {
-		choppedTrees = {},
-		minedGems = {},
+		choppedTrees = {} :: {[string]: boolean},
+		minedGems = {} :: {[string]: boolean},
 	}
 
+	local diffsAny = t.diffs
 	if type(diffsAny) == "table" then
-		local ct = diffsAny.choppedTrees
-		local mg = diffsAny.minedGems
-		if type(ct) == "table" then
-			diffs.choppedTrees = ct :: { [string]: boolean }
+		if type(diffsAny.choppedTrees) == "table" then
+			diffs.choppedTrees = diffsAny.choppedTrees :: {[string]: boolean}
 		end
-		if type(mg) == "table" then
-			diffs.minedGems = mg :: { [string]: boolean }
+		if type(diffsAny.minedGems) == "table" then
+			diffs.minedGems = diffsAny.minedGems :: {[string]: boolean}
+		end
+	end
+
+	local inventories: InventoriesMap = {} :: InventoriesMap
+	local invAny = t.inventories
+	if type(invAny) == "table" then
+		for userKey, itemMapAny in pairs(invAny) do
+			if type(userKey) == "string" and type(itemMapAny) == "table" then
+				local itemMap: ItemMap = {} :: ItemMap
+				for itemName, value in pairs(itemMapAny) do
+					if type(itemName) == "string" and type(value) == "number" then
+						itemMap[itemName] = value
+					end
+				end
+				inventories[userKey] = itemMap
+			end
 		end
 	end
 
 	local version = if type(t.version) == "number" then t.version else 1
 	local lastSavedAt = if type(t.lastSavedAt) == "number" then t.lastSavedAt else os.time()
+	local seed = if type(t.seed) == "number" then t.seed else nil
 
-        
+	print("[WorldPersistence] Loaded world:", worldId, "seed:", seed)
 
 	return {
 		version = version,
 		seed = seed,
 		diffs = diffs,
+		inventories = inventories,
 		lastSavedAt = lastSavedAt,
 	}
 end
@@ -125,7 +116,7 @@ function WorldPersistence.Save(worldId: string, save: WorldSave)
 		warn("[WorldPersistence] Save failed. worldId=", worldId, "err=", err)
 	end
 
-    print("[WorldPersistence] Saving world:", worldId, "seed:", save.seed)
+	print("[WorldPersistence] Saving world:", worldId, "seed:", save.seed)
 end
 
 function WorldPersistence.Reset(worldId: string): WorldSave
