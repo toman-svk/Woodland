@@ -769,6 +769,35 @@ local function applyConstructionVisuals(): boolean
 	return true
 end
 
+-- Returns how many trees are within (or touching) the fence perimeter area.
+-- Used by BaseUpgradeQuest to block the upgrade until the player chops them.
+-- The check zone is a square of FENCE_HALF_SIZE + 6 studs (small buffer so trees
+-- whose trunks sit just outside the fence line are also flagged).
+function BaseUpgradeService.GetFenceBlockingTreeCount(): number
+	local generated = getGeneratedFolder()
+	if not generated then return 0 end
+
+	local spawnHub = findSpawnHub(generated)
+	if not spawnHub then return 0 end
+
+	local treesFolder = generated:FindFirstChild("Trees")
+	if not (treesFolder and treesFolder:IsA("Folder")) then return 0 end
+
+	local fenceCenter = spawnHub:GetPivot().Position + FENCE_OFFSET
+	local checkSize   = FENCE_HALF_SIZE + 6  -- buffer catches trees at the edge
+
+	local count = 0
+	for _, tree in ipairs(treesFolder:GetChildren()) do
+		if not tree:IsA("Model") then continue end
+		local pos = tree:GetPivot().Position
+		if math.abs(pos.X - fenceCenter.X) <= checkSize
+			and math.abs(pos.Z - fenceCenter.Z) <= checkSize then
+			count += 1
+		end
+	end
+	return count
+end
+
 function BaseUpgradeService.StartTimedUpgrade(targetLevel: number, durationSeconds: number?): boolean
 	local save = getSaveSafe()
 	if not save then

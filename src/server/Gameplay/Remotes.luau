@@ -59,6 +59,10 @@ Remotes.PlaceBuilding = ensureRemoteEvent(remotesFolder, "PlaceBuilding")
 Remotes.PickupFX = ensureRemoteEvent(remotesFolder, "PickupFX")
 Remotes.SprintToggle = ensureRemoteEvent(remotesFolder, "SprintToggle")
 
+-- General-purpose toast notification fired from server → specific client.
+-- Payload: { message: string, duration: number? }
+Remotes.ShowNotification = ensureRemoteEvent(remotesFolder, "ShowNotification")
+
 -- RemoteFunction (outside /Remotes in your current structure)
 Remotes.GameConfig = ensureRemoteFunction(shared, "GameConfig")
 

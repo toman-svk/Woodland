@@ -7,7 +7,8 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Remotes = Shared:WaitForChild("Remotes")
 local GetRemote = require(Remotes:WaitForChild("GetRemote"))
 
-local questCompleteRemote = GetRemote("QuestComplete", "RemoteEvent") :: RemoteEvent
+local questCompleteRemote    = GetRemote("QuestComplete",    "RemoteEvent") :: RemoteEvent
+local showNotificationRemote = GetRemote("ShowNotification", "RemoteEvent") :: RemoteEvent
 
 local BaseUpgradeService = require(
 	ServerScriptService
@@ -238,6 +239,16 @@ local function HandleChoice(player: Player, choice: string): DialoguePayload?
 	end
 
 	wood.Value -= REQUIRED_WOOD
+
+	-- Block the upgrade if trees are still standing inside / on the fence line.
+	local blockingTrees = BaseUpgradeService.GetFenceBlockingTreeCount()
+	if blockingTrees > 0 then
+		showNotificationRemote:FireClient(player, {
+			message  = ("Chop down the %d tree(s) inside the base area before upgrading!"):format(blockingTrees),
+			duration = 5,
+		})
+		return nil
+	end
 
 	local ok = BaseUpgradeService.StartTimedUpgrade(2, BUILD_DURATION_SECONDS)
 	if ok then
