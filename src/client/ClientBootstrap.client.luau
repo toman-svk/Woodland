@@ -115,23 +115,32 @@ else
 		"UIScaler",
 		"Sprint",
 		"Combat",
+		"ComboCounter",
 		"Spells",
 		"Dialogue",
 		"PickupFX",
+		"QuestFeedback",
 		"AmbientAudio",
+		"DayUI"
 	}
 end
 
 local startedCount = 0
+
+print("[ClientBootstrap] WorldClientModules children:")
+for _, child in ipairs(worldFolder:GetChildren()) do
+	print(" -", child.Name, child.ClassName)
+end
+
 for _, name in ipairs(order) do
 	if startModuleFrom(folderToUse, name) then
 		startedCount += 1
 	end
-end
-
-print(("[ClientBootstrap] Context=%s. Started %d/%d modules from %s"):format(
+	print(("[ClientBootstrap] Context=%s. Started %d/%d modules from %s"):format(
 	ctx,
 	startedCount,
 	#order,
 	folderToUse:GetFullName()
 ))
+end
+

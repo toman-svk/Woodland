@@ -128,6 +128,17 @@ function SpawnCaves.Build(root: Folder, origin: Vector3, rng: Random, _save: any
 		caveCount += 1
 	end
 
+	-- Spawn one cave close to the base (between clear radius and normal min distance)
+	local clearR: number = (WorldConfig.SPAWN_CLEAR_RADIUS :: number?) or 90
+	local minCaveDist: number = (WorldConfig.CAVE_MIN_SPAWN_DISTANCE :: number?)
+		or (WorldConfig.MOUNTAIN_SPAWN_BUFFER :: number?)
+		or 180
+	local nearAngle = rng:NextNumber() * math.pi * 2
+	local nearDist = clearR + (minCaveDist - clearR) * 0.5  -- midpoint between clear zone and normal min
+	local nearX = math.cos(nearAngle) * nearDist
+	local nearZ = math.sin(nearAngle) * nearDist
+	spawnAt(nearX, nearZ, 0)
+
 	-- guarantee
 	local guaranteed = math.min(minCaves, maxCaves, #candidates)
 	for i = 1, guaranteed do

@@ -1,45 +1,37 @@
--- greeting + animation + quest prompt
-
--- ServerScriptService/Server/NPC/BlacksmithAnimation.server.lua
 --!strict
+-- src/server/Gameplay/NPC/Blacksmith/BlacksmithController.luau
 
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
 
--- CONFIG
-local GENERATED = workspace:WaitForChild("Generated")
-local NPC_MODEL = GENERATED:WaitForChild("Blacksmith") :: Model
+local BlacksmithController = {}
 
 local ANIMATION_ID = "rbxassetid://76100627562076"
 local GREET_SOUND_ID = "rbxassetid://132538344661103"
 
 local TRIGGER_DISTANCE = 25
-local COOLDOWN = 20 -- seconds (per player)
+local COOLDOWN = 20
 
--- Sound tuning
 local SOUND_VOLUME = 0.9
 local SOUND_MAX_DISTANCE = 60
 local SOUND_SPEED_MIN = 0.98
 local SOUND_SPEED_MAX = 1.03
 
--- =========================
--- Helpers (strict + nil-safe)
--- =========================
+local running = false
+
+
 
 local function getAnyRoot(model: Model): BasePart?
-	-- Prefer PrimaryPart if set
 	local pp = model.PrimaryPart
 	if pp and pp:IsA("BasePart") then
 		return pp
 	end
 
-	-- Prefer HumanoidRootPart if exists
 	local hrp = model:FindFirstChild("HumanoidRootPart")
 	if hrp and hrp:IsA("BasePart") then
 		return hrp
 	end
 
-	-- Fallback: first BasePart anywhere in model
 	local anyPart = model:FindFirstChildWhichIsA("BasePart", true)
 	if anyPart then
 		return anyPart
@@ -49,7 +41,6 @@ local function getAnyRoot(model: Model): BasePart?
 end
 
 local function getOrCreateAnimator(parent: Instance): Animator?
-	-- parent can be Humanoid or AnimationController
 	local existing = parent:FindFirstChildOfClass("Animator")
 	if existing then
 		return existing
@@ -69,7 +60,7 @@ local function loadTrack(animator: Animator): AnimationTrack?
 	end)
 
 	if not ok then
-		warn("[BlacksmithAnimation] LoadAnimation failed (likely rig mismatch).")
+		warn("[BlacksmithController] LoadAnimation failed.")
 		return nil
 	end
 
@@ -80,13 +71,10 @@ local function loadTrack(animator: Animator): AnimationTrack?
 		return track
 	end
 
-	warn("[BlacksmithAnimation] LoadAnimation returned unexpected:", result)
 	return nil
 end
 
 local function playGreetSound(parentPart: BasePart)
-	-- If you already have a Sound under Blacksmith (like “hey guys”), we can reuse it,
-	-- but to be deterministic we spawn a temporary one:
 	local s = Instance.new("Sound")
 	s.Name = "BlacksmithGreet"
 	s.SoundId = GREET_SOUND_ID
@@ -107,7 +95,6 @@ local function facePlayerYaw(npc: Model, npcRoot: BasePart, playerRoot: BasePart
 		return
 	end
 
-	-- Keep position; change yaw to look at player
 	local pivotNow = npc:GetPivot()
 	local lookAt = pivotNow.Position + flatDir.Unit
 
@@ -119,81 +106,87 @@ local function facePlayerYaw(npc: Model, npcRoot: BasePart, playerRoot: BasePart
 	npc:PivotTo(newPivot)
 end
 
--- =========================
--- Init: find animation driver
--- =========================
+function BlacksmithController.Start(generated: Folder)
+	if running then
+		return
+	end
+	running = true
 
-local humanoid = NPC_MODEL:FindFirstChildOfClass("Humanoid")
-local animController = NPC_MODEL:FindFirstChildOfClass("AnimationController")
+	local npcModel = generated:FindFirstChild("Blacksmith")
+	if not (npcModel and npcModel:IsA("Model")) then
+		warn("[BlacksmithController] Blacksmith model not found under", generated:GetFullName())
+		return
+	end
 
-local animator: Animator? = nil
-if humanoid then
-	animator = getOrCreateAnimator(humanoid)
-elseif animController then
-	animator = getOrCreateAnimator(animController)
-else
-	warn("[BlacksmithAnimation] No Humanoid or AnimationController found under:", NPC_MODEL:GetFullName())
-	warn("[BlacksmithAnimation] Add a Humanoid (for rigged NPC) or AnimationController (for animated model).")
-	return
-end
+	local humanoid = npcModel:FindFirstChildOfClass("Humanoid")
+	local animController = npcModel:FindFirstChildOfClass("AnimationController")
 
-if not animator then
-	warn("[BlacksmithAnimation] Could not create/find Animator under NPC.")
-	return
-end
-
-local greetTrack: AnimationTrack? = loadTrack(animator)
-
-local npcRoot = getAnyRoot(NPC_MODEL)
-if not npcRoot then
-	warn("[BlacksmithAnimation] No BasePart found to act as root under:", NPC_MODEL:GetFullName())
-	return
-end
-
--- Per-player cooldown
-local lastTrigger: { [number]: number } = {}
-
-local function tryTrigger(player: Player)
-	local char = player.Character
-	if not char then return end
-
-	local pr = char:FindFirstChild("HumanoidRootPart")
-	if not (pr and pr:IsA("BasePart")) then return end
-	local playerRoot = pr :: BasePart
-
-	local dist = (playerRoot.Position - npcRoot.Position).Magnitude
-	if dist > TRIGGER_DISTANCE then return end
-
-	local tNow = os.clock()
-	local tLast = lastTrigger[player.UserId] or 0
-	if (tNow - tLast) < COOLDOWN then return end
-	lastTrigger[player.UserId] = tNow
-
-	-- Face player, then play sound + anim at the same time
-	facePlayerYaw(NPC_MODEL, npcRoot, playerRoot)
-	playGreetSound(npcRoot)
-
-	if greetTrack then
-		if greetTrack.IsPlaying then
-			greetTrack:Stop(0.05)
-		end
-		greetTrack:Play(0.05, 1, 1)
+	local animator: Animator? = nil
+	if humanoid then
+		animator = getOrCreateAnimator(humanoid)
+	elseif animController then
+		animator = getOrCreateAnimator(animController)
 	else
-		warn("[BlacksmithAnimation] No animation track (rig mismatch likely). Sound + facing still work.")
+		warn("[BlacksmithController] No Humanoid or AnimationController found under:", npcModel:GetFullName())
+		return
 	end
+
+	if not animator then
+		warn("[BlacksmithController] Could not create/find Animator under NPC.")
+		return
+	end
+
+	local greetTrack = loadTrack(animator)
+
+	local npcRoot = getAnyRoot(npcModel)
+	if not npcRoot then
+		warn("[BlacksmithController] No BasePart found under:", npcModel:GetFullName())
+		return
+	end
+
+	local lastTrigger: {[number]: number} = {}
+
+	task.spawn(function()
+		while npcModel.Parent ~= nil do
+			task.wait(1)
+
+			for _, player in ipairs(Players:GetPlayers()) do
+				local char = player.Character
+				if not char then
+					continue
+				end
+
+				local playerRoot = char:FindFirstChild("HumanoidRootPart")
+				if not (playerRoot and playerRoot:IsA("BasePart")) then
+					continue
+				end
+
+				local dist = (playerRoot.Position - npcRoot.Position).Magnitude
+				if dist > TRIGGER_DISTANCE then
+					continue
+				end
+
+				local now = os.clock()
+				local last = lastTrigger[player.UserId] or 0
+				if (now - last) < COOLDOWN then
+					continue
+				end
+				lastTrigger[player.UserId] = now
+
+				facePlayerYaw(npcModel, npcRoot, playerRoot)
+				playGreetSound(npcRoot)
+
+				if greetTrack then
+					if greetTrack.IsPlaying then
+						greetTrack:Stop(0.05)
+					end
+					greetTrack:Play(0.05, 1, 1)
+				end
+			end
+		end
+	end)
+
+	print("[BlacksmithController] Started for", npcModel:GetFullName())
 end
 
--- Polling loop (simple and fine for small player counts)
-while true do
-	task.wait(1)
-
-	-- If NPC removed, stop
-	if NPC_MODEL.Parent == nil then
-		warn("[BlacksmithAnimation] NPC removed; stopping.")
-		break
-	end
-
-	for _, p in ipairs(Players:GetPlayers()) do
-		tryTrigger(p)
-	end
-end
+return BlacksmithController

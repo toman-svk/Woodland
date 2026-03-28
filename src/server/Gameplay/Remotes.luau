@@ -54,6 +54,8 @@ Remotes.QuestComplete = ensureRemoteEvent(remotesFolder, "QuestComplete")
 Remotes.CombatAttack = ensureRemoteEvent(remotesFolder, "CombatAttack")
 Remotes.CombatHit = ensureRemoteEvent(remotesFolder, "CombatHit")
 
+Remotes.PlaceBuilding = ensureRemoteEvent(remotesFolder, "PlaceBuilding")
+
 Remotes.PickupFX = ensureRemoteEvent(remotesFolder, "PickupFX")
 Remotes.SprintToggle = ensureRemoteEvent(remotesFolder, "SprintToggle")
 

@@ -3,14 +3,15 @@
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
 
 local ConfigLocator = require(script.Parent.Parent:WaitForChild("Config"):WaitForChild("ConfigLocator"))
 local WorldConfig = ConfigLocator.WorldConfig
 local WorldHeight = ConfigLocator.WorldHeight
 
+local RESET_WORLD_SAVE_IN_STUDIO = true
 local GAMEPLAY_PLACE_ID = 74640557554115
 
--- Only run in Gameplay place
 if game.PlaceId ~= GAMEPLAY_PLACE_ID then
 	return {}
 end
@@ -18,7 +19,6 @@ end
 local WorldIds = require(script.Parent:WaitForChild("WorldIds"))
 local WorldGenerator = require(script.Parent.Parent:WaitForChild("Generation"):WaitForChild("WorldGenerator"))
 local WorldPersistence = require(script.Parent.Parent.Parent:WaitForChild("Persistence"):WaitForChild("WorldPersistence"))
-
 
 export type WorldDiffs = {
 	choppedTrees: {[string]: boolean},
@@ -28,11 +28,40 @@ export type WorldDiffs = {
 export type ItemMap = {[string]: number}
 export type InventoriesMap = {[string]: ItemMap}
 
+export type BaseStructureState = {
+	level: number,
+	isUpgrading: boolean,
+	targetLevel: number?,
+	upgradeEndsAt: number?,
+}
+
+export type PlacedStructureSave = {
+	uid:          string,
+	buildingType: string,
+	px: number,
+	py: number,
+	pz: number,
+	health:      number,
+	buildEndsAt: number?,
+}
+
+export type StructuresState = {
+	base:   BaseStructureState,
+	placed: { PlacedStructureSave },
+}
+
+export type TimeState = {
+	currentDay: number,
+	currentPhase: "Day" | "Night",
+}
+
 export type WorldSave = {
 	version: number,
 	seed: number?,
 	diffs: WorldDiffs,
 	inventories: InventoriesMap,
+	structures: StructuresState,
+	time: TimeState,
 	lastSavedAt: number,
 }
 
@@ -67,10 +96,15 @@ local function getOrCreateFolder(parent: Instance, name: string): Folder
 	if f and f:IsA("Folder") then
 		return f
 	end
+
 	local nf = Instance.new("Folder")
 	nf.Name = name
 	nf.Parent = parent
 	return nf
+end
+
+function WorldService.GetCurrentWorld(): WorldRuntime?
+	return current
 end
 
 local function destroyCurrentWorld()
@@ -96,9 +130,14 @@ local function createWorldFolders(worldId: string): (Folder, Folder)
 end
 
 local function teleportPlayerToSpawn(player: Player, origin: Vector3, spawnCFrame: CFrame?)
-	local spawnX = (WorldConfig.SPAWN_CENTER_X or 0)
-	local spawnZ = (WorldConfig.SPAWN_CENTER_Z or 0)
-	local baseY = (WorldConfig.BASE_Y or 0)
+	local spawnX = WorldConfig.SPAWN_CENTER_X or 0
+	local spawnZ = WorldConfig.SPAWN_CENTER_Z or 0
+	local baseY = WorldConfig.BASE_Y or 0
+
+	-- How many studs above the spawn point to drop the player from.
+	-- Tall enough to guarantee we're above terrain regardless of voxel snapping,
+	-- small enough that the fall looks natural and not disorienting.
+	local SPAWN_DROP_HEIGHT = 12
 
 	local function place(char: Model)
 		local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -107,13 +146,16 @@ local function teleportPlayerToSpawn(player: Player, origin: Vector3, spawnCFram
 		end
 
 		if spawnCFrame ~= nil then
-			hrp.CFrame = spawnCFrame + Vector3.new(0, 5, 0)
+			-- Drop the player above the SpawnLocation so they always land on top
+			-- of the hub rather than clipping through it.
+			hrp.CFrame = spawnCFrame + Vector3.new(0, SPAWN_DROP_HEIGHT, 0)
 			return
 		end
 
+		-- Fallback: no SpawnLocation found, calculate ground height manually.
 		local h = WorldHeight.heightAt(origin.X + spawnX, origin.Z + spawnZ)
 		local groundY = baseY + h
-		hrp.CFrame = CFrame.new(origin.X + spawnX, groundY + 6, origin.Z + spawnZ)
+		hrp.CFrame = CFrame.new(origin.X + spawnX, groundY + SPAWN_DROP_HEIGHT, origin.Z + spawnZ)
 	end
 
 	if player.Character then
@@ -122,7 +164,7 @@ local function teleportPlayerToSpawn(player: Player, origin: Vector3, spawnCFram
 	player.CharacterAdded:Connect(place)
 end
 
-local function extractTeleportData(player: Player): ({ [string]: any }?, string?)
+local function extractTeleportData(player: Player): ({[string]: any}?, string?)
 	local joinData = player:GetJoinData()
 	local tp = joinData.TeleportData
 	if tp == nil then
@@ -131,25 +173,39 @@ local function extractTeleportData(player: Player): ({ [string]: any }?, string?
 	if type(tp) ~= "table" then
 		return nil, "TeleportData not a table"
 	end
-	return tp :: { [string]: any }, nil
+	return tp :: {[string]: any}, nil
 end
 
 local function ensureSeed(save: WorldSave, tpSeed: number?): number
-	-- Existing save always wins
 	if typeof(save.seed) == "number" then
 		return save.seed :: number
 	end
 
-	-- If Lobby provided seed, adopt it
 	if typeof(tpSeed) == "number" then
 		save.seed = tpSeed
 		return tpSeed
 	end
 
-	-- Last resort (should be rare if Lobby always provides a seed)
 	local newS = Random.new():NextInteger(1, 2_000_000_000)
 	save.seed = newS
 	return newS
+end
+
+local function updateRootAttributes()
+	if current == nil then
+		return
+	end
+
+	local base = current.save.structures.base
+	local timeState = current.save.time
+
+	current.root:SetAttribute("BaseLevel", base.level)
+	current.root:SetAttribute("BaseIsUpgrading", base.isUpgrading)
+	current.root:SetAttribute("BaseTargetLevel", base.targetLevel)
+	current.root:SetAttribute("BaseUpgradeEndsAt", base.upgradeEndsAt)
+
+	current.root:SetAttribute("CurrentDay", timeState.currentDay)
+	current.root:SetAttribute("CurrentPhase", timeState.currentPhase)
 end
 
 local function bootstrapFromFirstPlayer(firstPlayer: Player)
@@ -175,15 +231,18 @@ local function bootstrapFromFirstPlayer(firstPlayer: Player)
 		tpSeed = (tp :: any).seed :: number
 	end
 
-	-- Load save
-	local save = WorldPersistence.Load(worldId) :: WorldSave
+	local save: WorldSave
+	if RunService:IsStudio() and RESET_WORLD_SAVE_IN_STUDIO then
+		save = WorldPersistence.Reset(worldId) :: WorldSave
+		print("[WorldService] Studio reset enabled. Reset world:", worldId)
+	else
+		save = WorldPersistence.Load(worldId) :: WorldSave
+	end
 
-	-- Seed selection
 	local seed = ensureSeed(save, tpSeed)
 
-	-- If we adopted seed (meaning save had none), persist it immediately
-	if tpSeed ~= nil and (save.seed == tpSeed) then
-		WorldPersistence.Save(worldId, save :: any)
+	if tpSeed ~= nil and save.seed == tpSeed then
+		WorldPersistence.Save(worldId, save)
 	end
 
 	print("========== WORLD BOOTSTRAP ==========")
@@ -192,10 +251,15 @@ local function bootstrapFromFirstPlayer(firstPlayer: Player)
 	print("[WorldService] OwnerUserId:", ownerUserId)
 	print("[WorldService] Save.seed:", tostring(save.seed))
 	print("[WorldService] TeleportData.seed:", tostring(tpSeed))
+	print("[WorldService] Base level:", save.structures.base.level)
+	print("[WorldService] Base isUpgrading:", save.structures.base.isUpgrading)
+	print("[WorldService] Base targetLevel:", tostring(save.structures.base.targetLevel))
+	print("[WorldService] Base upgradeEndsAt:", tostring(save.structures.base.upgradeEndsAt))
+	print("[WorldService] Current day:", save.time.currentDay)
+	print("[WorldService] Current phase:", save.time.currentPhase)
 	print("[WorldService] Using seed:", seed)
 	print("=====================================")
 
-	-- Create folders
 	destroyCurrentWorld()
 	local root, generated = createWorldFolders(worldId)
 
@@ -232,6 +296,7 @@ local function bootstrapFromFirstPlayer(firstPlayer: Player)
 		spawnCFrame = spawnCFrame,
 	}
 
+	updateRootAttributes()
 	teleportPlayerToSpawn(firstPlayer, origin, spawnCFrame)
 end
 
@@ -241,6 +306,78 @@ end
 
 function WorldService.GetSave(): WorldSave?
 	return if current then current.save else nil
+end
+
+function WorldService.GetBaseLevel(): number
+	if current == nil then
+		return 1
+	end
+	return current.save.structures.base.level
+end
+
+function WorldService.SetBaseLevel(level: number)
+	if current == nil then
+		return
+	end
+
+	local safeLevel = math.max(1, math.floor(level))
+	current.save.structures.base.level = safeLevel
+	updateRootAttributes()
+	WorldService.MarkDirty()
+end
+
+function WorldService.SetBaseUpgradeState(state: {
+	isUpgrading: boolean,
+	targetLevel: number?,
+	upgradeEndsAt: number?,
+}?)
+	if current == nil then
+		return
+	end
+
+	local base = current.save.structures.base
+
+	if state == nil then
+		base.isUpgrading = false
+		base.targetLevel = nil
+		base.upgradeEndsAt = nil
+	else
+		base.isUpgrading = state.isUpgrading
+		base.targetLevel = state.targetLevel
+		base.upgradeEndsAt = state.upgradeEndsAt
+	end
+
+	updateRootAttributes()
+	WorldService.MarkDirty()
+end
+
+function WorldService.GetCurrentDay(): number
+	if current == nil then
+		return 1
+	end
+	return current.save.time.currentDay
+end
+
+function WorldService.GetCurrentPhase(): "Day" | "Night"
+	if current == nil then
+		return "Day"
+	end
+	return current.save.time.currentPhase
+end
+
+function WorldService.SetTimeState(currentDay: number, currentPhase: "Day" | "Night")
+	if current == nil then
+		return
+	end
+
+	local safeDay = math.max(1, math.floor(currentDay))
+	local safePhase: "Day" | "Night" = if currentPhase == "Night" then "Night" else "Day"
+
+	current.save.time.currentDay = safeDay
+	current.save.time.currentPhase = safePhase
+
+	updateRootAttributes()
+	WorldService.MarkDirty()
 end
 
 function WorldService.MarkDirty()
@@ -275,7 +412,7 @@ function WorldService.Bootstrap()
 				lastSaveClock = now
 
 				current.save.lastSavedAt = os.time()
-				WorldPersistence.Save(current.worldId, current.save :: any)
+				WorldPersistence.Save(current.worldId, current.save)
 				print("[WorldService] Autosaved:", current.worldId)
 			end
 		end
@@ -284,7 +421,7 @@ function WorldService.Bootstrap()
 	game:BindToClose(function()
 		if current then
 			current.save.lastSavedAt = os.time()
-			WorldPersistence.Save(current.worldId, current.save :: any)
+			WorldPersistence.Save(current.worldId, current.save)
 		end
 	end)
 

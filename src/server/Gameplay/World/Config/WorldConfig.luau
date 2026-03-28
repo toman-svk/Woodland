@@ -6,7 +6,7 @@ local WorldConfig = {}
 -- Spawn hub (stable area)
 WorldConfig.SPAWN_CENTER_X = 0
 WorldConfig.SPAWN_CENTER_Z = 0
-WorldConfig.SPAWN_FLAT_RADIUS = 40      -- flatten terrain here
+WorldConfig.SPAWN_FLAT_RADIUS = 90      -- flatten terrain here
 
 -- Spawn Hub (stable safe area)
 
@@ -27,7 +27,8 @@ WorldConfig.NOISE_SCALE = 0.015
 WorldConfig.ROCK_START = 60
 
 -- SpawnHub Area
-WorldConfig.SPAWN_HUB_FIXED_GROUND_Y = nil -- e.g. 50 to force hub ground to Y=50
+WorldConfig.SPAWN_HUB_FIXED_GROUND_Y = 45 -- e.g. 50 to force hub ground to Y=50
+WorldConfig.SPAWN_HUB_Y_OFFSET = 2.5        -- adjust hub height offset if it's still misaligned (e.g. -1 to move down 1 stud)
 WorldConfig.SPAWN_HUB_RADIUS = 120     -- radius of spawn hub area (where we place the SpawnHubTemplate)
 WorldConfig.SPAWN_HUB_BLEND_WIDTH = 40
 WorldConfig.SPAWN_HUB_RADIUS_L2 = 160

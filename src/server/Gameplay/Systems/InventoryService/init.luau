@@ -28,6 +28,7 @@ type InventoriesMap = {[string]: ItemMap}
 local DEFAULT_ITEMS = {
 	Wood = 0,
 	Gold = 0,
+	Gem  = 0,  -- crystals mined with the Pickaxe
 }
 
 local function ensureInventoryFolder(player: Player): Folder
@@ -58,9 +59,22 @@ end
 local function getWorldSave()
 	if WorldService.GetSave then
 		return WorldService.GetSave()
-	else
-		return nil
 	end
+	return nil
+end
+
+local function waitForWorldSave(timeoutSeconds: number): any
+	local started = os.clock()
+
+	while os.clock() - started < timeoutSeconds do
+		local save = getWorldSave()
+		if save ~= nil then
+			return save
+		end
+		task.wait(0.1)
+	end
+
+	return nil
 end
 
 local function ensureInventoriesTable(save: any): InventoriesMap
@@ -106,26 +120,29 @@ local function persistPlayerFolderToSave(player: Player)
 	if WorldService.MarkDirty then
 		WorldService.MarkDirty()
 	end
+
 	log("Persisted inventory for", player.Name, inv)
 end
 
 local function loadSaveToPlayerFolder(player: Player)
 	local folder = ensureInventoryFolder(player)
-	local save = getWorldSave()
 
-	-- Always ensure defaults exist in UI/player folder
+	-- Always create defaults immediately so UI has something to bind to
 	for itemName, defaultValue in pairs(DEFAULT_ITEMS) do
 		ensureIntValue(folder, itemName, defaultValue)
 	end
 
+	-- IMPORTANT: wait for WorldService to finish bootstrapping
+	local save = waitForWorldSave(10)
+
 	if not save then
-		log("No world save yet; using default inventory for", player.Name)
+		log("No world save became available in time; using default inventory for", player.Name)
 		return
 	end
 
 	local inv = getPlayerInventoryTable(save, player.UserId)
 
-	-- Ensure defaults also exist in save
+	-- Ensure defaults exist in save too
 	for itemName, defaultValue in pairs(DEFAULT_ITEMS) do
 		if type(inv[itemName]) ~= "number" then
 			inv[itemName] = defaultValue
@@ -140,6 +157,7 @@ local function loadSaveToPlayerFolder(player: Player)
 	if WorldService.MarkDirty then
 		WorldService.MarkDirty()
 	end
+
 	log("Loaded inventory for", player.Name, inv)
 end
 
@@ -147,9 +165,8 @@ function InventoryService.InitPlayer(player: Player)
 	log("InitPlayer", player.Name)
 
 	local folder = ensureInventoryFolder(player)
-	loadSaveToPlayerFolder(player)
 
-	-- Persist whenever any IntValue changes
+	-- Hook persistence immediately
 	for _, child in ipairs(folder:GetChildren()) do
 		if child:IsA("IntValue") then
 			child.Changed:Connect(function()
@@ -158,7 +175,6 @@ function InventoryService.InitPlayer(player: Player)
 		end
 	end
 
-	-- Persist newly-added item values too
 	folder.ChildAdded:Connect(function(child)
 		if child:IsA("IntValue") then
 			child.Changed:Connect(function()
@@ -168,7 +184,11 @@ function InventoryService.InitPlayer(player: Player)
 		end
 	end)
 
-	log("Inventory children:", #folder:GetChildren())
+	-- Load saved inventory AFTER world save exists
+	task.defer(function()
+		loadSaveToPlayerFolder(player)
+		log("Inventory children:", #folder:GetChildren())
+	end)
 end
 
 function InventoryService.Get(player: Player, itemName: string): number

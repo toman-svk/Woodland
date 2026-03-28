@@ -9,11 +9,13 @@ local WorldHeight = ConfigLocator.WorldHeight
 
 local SpawnHubRuntime = {}
 
+local CONTACT_EPSILON = 0.0
+
 local function setAnchoredRecursive(inst: Instance, anchored: boolean)
-	-- IMPORTANT: include the instance itself if it's a BasePart (top-level SpawnLocation!)
 	if inst:IsA("BasePart") then
 		inst.Anchored = anchored
 	end
+
 	for _, d in ipairs(inst:GetDescendants()) do
 		if d:IsA("BasePart") then
 			d.Anchored = anchored
@@ -29,20 +31,64 @@ local function offsetInstance(inst: Instance, delta: Vector3)
 	end
 end
 
-local function findSpawnLocationInFolder(folder: Instance): SpawnLocation?
-	return folder:FindFirstChildWhichIsA("SpawnLocation", true)
+local function findSpawnLocationInInstance(inst: Instance): SpawnLocation?
+	local sl = inst:FindFirstChildWhichIsA("SpawnLocation", true)
+	if sl then
+		return sl
+	end
+	return nil
 end
 
-local function findSpawnMarker(folder: Instance): BasePart?
-	local sl = folder:FindFirstChildWhichIsA("SpawnLocation", true)
-	if sl then return sl end
+local function findSpawnMarkerInInstance(inst: Instance): BasePart?
+	local sl = inst:FindFirstChildWhichIsA("SpawnLocation", true)
+	if sl then
+		return sl
+	end
 
-	local p = folder:FindFirstChild("SpawnLocation", true)
-	if p and p:IsA("BasePart") then
-		return p
+	local named = inst:FindFirstChild("SpawnLocation", true)
+	if named and named:IsA("BasePart") then
+		return named
 	end
 
 	return nil
+end
+
+
+-- Returns the lowest bottom-Y across every BasePart in the hub clones.
+-- Using this instead of the SpawnLocation's Y means the hub base (not the
+-- spawn marker, which may be elevated) is what sits on the terrain surface.
+local function getHubBottomY(clonesList: {Instance}): number
+	local minY = math.huge
+	local lowestPart: BasePart? = nil
+	local lowestParent: Instance? = nil
+	local function checkPart(p: BasePart)
+		-- Skip DropZone as it's intentionally deep and shouldn't affect ground positioning
+		if p.Name == "DropZone" then
+			return
+		end
+		local bottom = p.Position.Y - p.Size.Y / 2
+		if bottom < minY then
+			minY = bottom
+			lowestPart = p
+			lowestParent = p.Parent
+		end
+	end
+	for _, inst in ipairs(clonesList) do
+		if inst:IsA("BasePart") and inst.Name ~= "DropZone" then
+			checkPart(inst :: BasePart)
+		end
+		for _, d in ipairs(inst:GetDescendants()) do
+			if d:IsA("BasePart") and d.Name ~= "DropZone" then
+				checkPart(d :: BasePart)
+			end
+		end
+	end
+	if lowestPart then
+		print(("[SpawnHubRuntime] Lowest part: %s (parent: %s) at Y=%.1f, size=%.1f, bottom=%.1f"):format(
+			lowestPart.Name, lowestParent and lowestParent.Name or "?", lowestPart.Position.Y, lowestPart.Size.Y, minY
+		))
+	end
+	return if minY == math.huge then 0 else minY
 end
 
 export type BuildResult = {
@@ -55,26 +101,26 @@ function SpawnHubRuntime.Build(root: Folder, origin: Vector3, _rng: Random, _sav
 	local templateFolder = templates:WaitForChild("SpawnHubTemplate")
 
 	local clones: {Instance} = {}
-	local spawnLoc: BasePart? = nil
+	local spawnMarker: BasePart? = nil
 	local count = 0
 
-	-- 1) Clone and offset into world
 	for _, child in ipairs(templateFolder:GetChildren()) do
 		local clone = child:Clone()
 		clone.Parent = root
-		offsetInstance(clone, origin)
 
+		offsetInstance(clone, origin)
 		table.insert(clones, clone)
 
-		if spawnLoc == nil then
-			local sl = findSpawnLocationInFolder(clone)
-			if sl then
-				spawnLoc = sl
+		print(("[SpawnHubRuntime] Cloned %s (class: %s)"):format(clone.Name, clone.ClassName))
+
+		if spawnMarker == nil then
+			local exactSpawn = findSpawnLocationInInstance(clone)
+			if exactSpawn then
+				spawnMarker = exactSpawn
 			else
-				local fallback = findSpawnMarker(root)
+				local fallback = findSpawnMarkerInInstance(clone)
 				if fallback then
-					warn("[SpawnHubRuntime] No SpawnLocation found in SpawnHubTemplate clones. Looking for BasePart named 'SpawnLocation' as fallback, found:", fallback:GetFullName())
-					spawnLoc = fallback :: BasePart?
+					spawnMarker = fallback
 				end
 			end
 		end
@@ -82,45 +128,69 @@ function SpawnHubRuntime.Build(root: Folder, origin: Vector3, _rng: Random, _sav
 		count += 1
 	end
 
-	-- 2) Snap vertically using the SAME height math as terrain
-	-- 2) Snap vertically to the SAME hub ground height as TerrainGenerator
-	if spawnLoc then
-		local baseY: number = (WorldConfig.BASE_Y :: number?) or 0
-		local spawnX: number = (WorldConfig.SPAWN_CENTER_X :: number?) or 0
-		local spawnZ: number = (WorldConfig.SPAWN_CENTER_Z :: number?) or 0
-
-		local hubGroundY: number
-		do
-			local fixed = WorldConfig.SPAWN_HUB_FIXED_GROUND_Y
-			if typeof(fixed) == "number" then
-				hubGroundY = (fixed :: number)
-			else
-				local plateauH = WorldHeight.heightAt(origin.X + spawnX, origin.Z + spawnZ)
-				hubGroundY = baseY + plateauH
-			end
-		end
-
-		local LIFT = 0.05
-		local EXTRA_RAISE = 1.0 -- studs (raise hub a bit above grass)
-		local targetY = hubGroundY + (spawnLoc.Size.Y * 0.5) + LIFT + EXTRA_RAISE
-		local dy = targetY - spawnLoc.Position.Y
-
-		if math.abs(dy) > 1e-3 then
-			local delta = Vector3.new(0, dy, 0)
-			for _, inst in ipairs(clones) do
-				offsetInstance(inst, delta)
-			end
-		end
-	else
-		warn("[SpawnHubRuntime] No SpawnLocation found in SpawnHubTemplate clones.")
+	if #clones == 0 then
+		warn("[SpawnHubRuntime] SpawnHubTemplate is empty.")
+		return {
+			count = 0,
+			spawnCFrame = nil,
+		}
 	end
 
-	-- 3) Anchor after final placement (and anchor top-level parts too)
+	-- Anchor all parts BEFORE PivotTo so Motor6D joints don't interfere.
+	-- When anchored, PivotTo sets positions directly without physics.
 	for _, inst in ipairs(clones) do
 		setAnchoredRecursive(inst, true)
 	end
 
-	local spawnCFrame: CFrame? = if spawnLoc then spawnLoc.CFrame else nil
+	local baseY: number = (WorldConfig.BASE_Y :: number?) or 0
+
+	-- Use the same fixed ground height that terrain generation uses for the flat area
+	local hubGroundY: number = (WorldConfig.SPAWN_HUB_FIXED_GROUND_Y :: number?) or 50
+	local yOffset: number = (WorldConfig.SPAWN_HUB_Y_OFFSET :: number?) or 0
+	hubGroundY = hubGroundY + yOffset
+
+	local currentBottomY = getHubBottomY(clones)
+	local targetBottomY = hubGroundY + CONTACT_EPSILON
+	local dy = targetBottomY - currentBottomY
+
+	print(("[SpawnHubRuntime] Positioning hub: currentBottomY=%.1f, targetBottomY=%.1f, offset=%.1f"):format(
+		currentBottomY, targetBottomY, dy
+	))
+
+	if math.abs(dy) > 1e-4 then
+		local delta = Vector3.new(0, dy, 0)
+		for _, inst in ipairs(clones) do
+			local posBefore = if inst:IsA("Model") then inst:GetPivot().Position else inst.Position
+			offsetInstance(inst, delta)
+			local posAfter = if inst:IsA("Model") then inst:GetPivot().Position else inst.Position
+			print(("[SpawnHubRuntime] Offset %s: Y %.1f → Y %.1f"):format(inst.Name, posBefore.Y, posAfter.Y))
+
+			-- Debug output for Blacksmith
+			if inst.Name == "Blacksmith" then
+				local partCount = 0
+				for _, part in ipairs(inst:GetDescendants()) do
+					if part:IsA("BasePart") then
+						partCount += 1
+						if partCount <= 5 then
+							print(("[SpawnHubRuntime] Blacksmith part: %s, Transparency=%.1f, CanCollide=%s, Pos=%.1f"):format(
+								part.Name, part.Transparency, tostring(part.CanCollide), part.Position.Y
+							))
+						end
+					end
+				end
+				print(("[SpawnHubRuntime] Blacksmith total parts: %d"):format(partCount))
+			end
+		end
+	end
+
+	if spawnMarker == nil then
+		warn("[SpawnHubRuntime] No SpawnLocation found inside SpawnHubTemplate.")
+	end
+
+	local spawnCFrame: CFrame? = nil
+	if spawnMarker then
+		spawnCFrame = spawnMarker.CFrame
+	end
 
 	return {
 		count = count,

@@ -1,6 +1,9 @@
 --!strict
 -- src/shared/WorldClientModules/Dialogue.client.luau
--- Triggered by OpenDialogue RemoteEvent.
+-- Generic reusable dialogue / quest template.
+-- Supports:
+--   1) legacy string states ("QuestNotDone", ...)
+--   2) payload tables for reusable quests/NPC dialogues
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -15,11 +18,36 @@ local RemotesFolder = Shared:WaitForChild("Remotes")
 local GetRemote = require(RemotesFolder:WaitForChild("GetRemote"))
 
 local openDialogue = GetRemote("OpenDialogue", "RemoteEvent") :: RemoteEvent
+local dialogueChoice = GetRemote("DialogueChoice", "RemoteEvent") :: RemoteEvent
 
--- Assets
+-- Default assets for legacy blacksmith dialogue
 local WOOD_ICON = "rbxassetid://85144837910297"
 local BETTER_AXE_ICON = "rbxassetid://88097304181361"
 local REQUIRED_WOOD = 10
+
+export type DialogueRow = {
+	icon: string?,
+	text: string?,
+}
+
+export type DialogueActions = {
+	showAccept: boolean?,
+	showDecline: boolean?,
+	acceptText: string?,
+	declineText: string?,
+}
+
+export type DialoguePayload = {
+	title: string?,
+	body: string?,
+	requirement: DialogueRow?,
+	reward: DialogueRow?,
+	actions: DialogueActions?,
+	context: {
+		npcId: string?,
+		dialogueId: string?,
+	}?,
+}
 
 type UiRefs = {
 	screenGui: ScreenGui,
@@ -29,11 +57,22 @@ type UiRefs = {
 	closeBtn: TextButton,
 	bodyText: TextLabel,
 	reqRow: Frame,
+	reqIcon: ImageLabel,
+	reqText: TextLabel,
 	rewardRow: Frame,
+	rewardIcon: ImageLabel,
+	rewardText: TextLabel,
+	acceptBtn: TextButton,
+	declineBtn: TextButton,
 }
 
 local refs: UiRefs? = nil
 local started = false
+local currentContext: {npcId: string?, dialogueId: string?}? = nil
+
+local function displayName(): string
+	return (player.DisplayName ~= "" and player.DisplayName) or player.Name
+end
 
 local function ensureUi(): UiRefs
 	if refs ~= nil then
@@ -135,11 +174,12 @@ local function ensureUi(): UiRefs
 	closeBtn.AutoButtonColor = true
 	closeBtn.ZIndex = 23
 
+	-- Body text
 	local bodyText = Instance.new("TextLabel")
 	bodyText.Parent = content
 	bodyText.BackgroundTransparency = 1
 	bodyText.Position = UDim2.fromOffset(0, 52)
-	bodyText.Size = UDim2.new(1, 0, 1, -52 - 118)
+	bodyText.Size = UDim2.new(1, 0, 1, -52 - 230)
 	bodyText.TextWrapped = true
 	bodyText.TextXAlignment = Enum.TextXAlignment.Left
 	bodyText.TextYAlignment = Enum.TextYAlignment.Top
@@ -155,7 +195,7 @@ local function ensureUi(): UiRefs
 	footer.BackgroundTransparency = 1
 	footer.AnchorPoint = Vector2.new(0, 1)
 	footer.Position = UDim2.new(0, 0, 1, 0)
-	footer.Size = UDim2.new(1, 0, 0, 104)
+	footer.Size = UDim2.new(1, 0, 0, 220)
 	footer.ZIndex = 21
 
 	local footerLayout = Instance.new("UIListLayout")
@@ -166,7 +206,7 @@ local function ensureUi(): UiRefs
 	footerLayout.Padding = UDim.new(0, 10)
 	footerLayout.SortOrder = Enum.SortOrder.LayoutOrder
 
-	local function makeRow(iconId: string, text: string): Frame
+	local function makeRow(): (Frame, ImageLabel, TextLabel)
 		local row = Instance.new("Frame")
 		row.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 		row.BackgroundTransparency = 0.65
@@ -189,7 +229,6 @@ local function ensureUi(): UiRefs
 		icon.BackgroundTransparency = 1
 		icon.Size = UDim2.fromOffset(30, 30)
 		icon.Position = UDim2.fromOffset(12, 7)
-		icon.Image = iconId
 		icon.ZIndex = 22
 
 		local txt = Instance.new("TextLabel")
@@ -202,19 +241,71 @@ local function ensureUi(): UiRefs
 		txt.Font = Enum.Font.GothamBold
 		txt.TextSize = 20
 		txt.TextColor3 = Color3.fromRGB(35, 28, 18)
-		txt.Text = text
 		txt.ZIndex = 22
 
-		return row
+		return row, icon, txt
 	end
 
-	local reqRow = makeRow(WOOD_ICON, ("Need: %d Wood"):format(REQUIRED_WOOD))
+	local reqRow, reqIcon, reqText = makeRow()
 	reqRow.LayoutOrder = 1
 	reqRow.Parent = footer
 
-	local rewardRow = makeRow(BETTER_AXE_ICON, "Reward: Better Axe")
+	local rewardRow, rewardIcon, rewardText = makeRow()
 	rewardRow.LayoutOrder = 2
 	rewardRow.Parent = footer
+
+	-- Buttons row
+	local buttonsRow = Instance.new("Frame")
+	buttonsRow.Name = "ButtonsRow"
+	buttonsRow.BackgroundTransparency = 1
+	buttonsRow.Size = UDim2.new(1, 0, 0, 48)
+	buttonsRow.LayoutOrder = 3
+	buttonsRow.Parent = footer
+	buttonsRow.ZIndex = 21
+
+	local acceptBtn = Instance.new("TextButton")
+	acceptBtn.Name = "Accept"
+	acceptBtn.Size = UDim2.new(0.48, 0, 1, 0)
+	acceptBtn.Position = UDim2.new(0, 0, 0, 0)
+	acceptBtn.Text = "Accept"
+	acceptBtn.Font = Enum.Font.GothamBold
+	acceptBtn.TextSize = 22
+	acceptBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	acceptBtn.BackgroundColor3 = Color3.fromRGB(55, 140, 70)
+	acceptBtn.ZIndex = 22
+	acceptBtn.Parent = buttonsRow
+
+	local acceptCorner = Instance.new("UICorner")
+	acceptCorner.CornerRadius = UDim.new(0, 12)
+	acceptCorner.Parent = acceptBtn
+
+	local acceptStroke = Instance.new("UIStroke")
+	acceptStroke.Thickness = 1
+	acceptStroke.Color = Color3.fromRGB(25, 80, 35)
+	acceptStroke.Transparency = 0.25
+	acceptStroke.Parent = acceptBtn
+
+	local declineBtn = Instance.new("TextButton")
+	declineBtn.Name = "Decline"
+	declineBtn.Size = UDim2.new(0.48, 0, 1, 0)
+	declineBtn.Position = UDim2.new(0.52, 0, 0, 0)
+	declineBtn.Text = "Decline"
+	declineBtn.Font = Enum.Font.GothamBold
+	declineBtn.TextSize = 22
+	declineBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	declineBtn.BackgroundColor3 = Color3.fromRGB(110, 35, 35)
+	declineBtn.ZIndex = 22
+	declineBtn.Parent = buttonsRow
+
+	local declineCorner = Instance.new("UICorner")
+	declineCorner.CornerRadius = UDim.new(0, 12)
+	declineCorner.Parent = declineBtn
+
+	local declineStroke = Instance.new("UIStroke")
+	declineStroke.Thickness = 1
+	declineStroke.Color = Color3.fromRGB(65, 15, 15)
+	declineStroke.Transparency = 0.25
+	declineStroke.Parent = declineBtn
 
 	local r: UiRefs = {
 		screenGui = screenGui,
@@ -224,17 +315,24 @@ local function ensureUi(): UiRefs
 		closeBtn = closeBtn,
 		bodyText = bodyText,
 		reqRow = reqRow,
+		reqIcon = reqIcon,
+		reqText = reqText,
 		rewardRow = rewardRow,
+		rewardIcon = rewardIcon,
+		rewardText = rewardText,
+		acceptBtn = acceptBtn,
+		declineBtn = declineBtn,
 	}
 
 	refs = r
-
 	return r
 end
 
 local function applyPanelLayout(panel: Frame)
 	local cam = workspace.CurrentCamera
-	if not cam then return end
+	if not cam then
+		return
+	end
 	local vp = cam.ViewportSize
 
 	local insetTopLeft, insetBottomRight = GuiService:GetGuiInset()
@@ -247,7 +345,7 @@ local function applyPanelLayout(panel: Frame)
 	local targetRatio = 1.10
 	local idealH = math.floor(w / targetRatio)
 	local h = math.min(idealH, availableH)
-	h = math.max(h, 420)
+	h = math.max(h, 500)
 
 	panel.Size = UDim2.fromOffset(w, h)
 
@@ -267,49 +365,117 @@ local function applyPanelLayout(panel: Frame)
 	panel.Position = UDim2.fromOffset(math.floor(vp.X / 2), cy)
 end
 
-local function displayName(): string
-	return (player.DisplayName ~= "" and player.DisplayName) or player.Name
-end
-
-local function setDialogue(r: UiRefs, state: any)
-	r.reqRow.Visible = true
-	r.rewardRow.Visible = true
-
-	local msg: string
-	if state == "QuestNotDone" then
-		msg =
-			("Welcome to Woodland, %s!\n\n"):format(displayName())
-			.. "I’m John, the local blacksmith. My forge is running cold and I need wood to keep the furnace alive.\n"
-			.. "Bring me enough and I’ll reinforce your axe so it bites deeper into the trees."
-	elseif state == "QuestComplete" then
-		msg =
-			("Excellent work, %s!\n\n"):format(displayName())
-			.. "That wood will keep the furnace roaring. Here — take this improved axe.\n"
-			.. "It’s balanced better and should make chopping feel much faster."
-		r.reqRow.Visible = false
-	elseif state == "AlreadyDone" then
-		msg =
-			("Good to see you again, %s!\n\n"):format(displayName())
-			.. "Your improved axe should serve you well. If you need more upgrades later, come back with materials."
-		r.reqRow.Visible = false
-	elseif state == "NoWoodStat" then
-		msg =
-			("Hmm… %s, I can’t see your wood count yet.\n\n"):format(displayName())
-			.. "Try chopping a tree first — then come back and we’ll talk upgrades."
-		r.reqRow.Visible = false
-		r.rewardRow.Visible = false
-	else
-		msg = ("[Unknown state: %s]"):format(tostring(state))
-		r.reqRow.Visible = false
-		r.rewardRow.Visible = false
-	end
-
-	r.bodyText.Text = msg
-end
-
 local function hide(r: UiRefs)
 	r.panel.Visible = false
 	r.clickCatcher.Visible = false
+	currentContext = nil
+end
+
+local function applyPayload(r: UiRefs, payload: DialoguePayload)
+	r.title.Text = payload.title or "Dialogue"
+	r.bodyText.Text = payload.body or ""
+
+	if payload.requirement and payload.requirement.text then
+		r.reqRow.Visible = true
+		r.reqText.Text = payload.requirement.text
+		r.reqIcon.Image = payload.requirement.icon or ""
+	else
+		r.reqRow.Visible = false
+	end
+
+	if payload.reward and payload.reward.text then
+		r.rewardRow.Visible = true
+		r.rewardText.Text = payload.reward.text
+		r.rewardIcon.Image = payload.reward.icon or ""
+	else
+		r.rewardRow.Visible = false
+	end
+
+	local actions = payload.actions
+	if actions then
+		r.acceptBtn.Visible = actions.showAccept == true
+		r.declineBtn.Visible = actions.showDecline == true
+		r.acceptBtn.Text = actions.acceptText or "Accept"
+		r.declineBtn.Text = actions.declineText or "Decline"
+	else
+		r.acceptBtn.Visible = false
+		r.declineBtn.Visible = false
+	end
+
+	currentContext = payload.context
+end
+
+local function legacyPayloadFromState(state: any): DialoguePayload
+	if state == "QuestNotDone" then
+		return {
+			title = "John — Blacksmith",
+			body =
+				("Welcome to Woodland, %s!\n\n"):format(displayName())
+				.. "I’m John, the local blacksmith. My forge is running cold and I need wood to keep the furnace alive.\n"
+				.. "Bring me enough and I’ll reinforce your axe so it bites deeper into the trees.",
+			requirement = {
+				icon = WOOD_ICON,
+				text = ("Need: %d Wood"):format(REQUIRED_WOOD),
+			},
+			reward = {
+				icon = BETTER_AXE_ICON,
+				text = "Reward: Better Axe",
+			},
+			actions = {
+				showAccept = true,
+				showDecline = true,
+				acceptText = "Accept",
+				declineText = "Decline",
+			},
+		}
+	elseif state == "QuestComplete" then
+		return {
+			title = "John — Blacksmith",
+			body =
+				("Excellent work, %s!\n\n"):format(displayName())
+				.. "That wood will keep the furnace roaring. Here — take this improved axe.\n"
+				.. "It’s balanced better and should make chopping feel much faster.",
+			reward = {
+				icon = BETTER_AXE_ICON,
+				text = "Reward: Better Axe",
+			},
+			actions = {
+				showAccept = false,
+				showDecline = false,
+			},
+		}
+	elseif state == "AlreadyDone" then
+		return {
+			title = "John — Blacksmith",
+			body =
+				("Good to see you again, %s!\n\n"):format(displayName())
+				.. "Your improved axe should serve you well. If you need more upgrades later, come back with materials.",
+			actions = {
+				showAccept = false,
+				showDecline = false,
+			},
+		}
+	elseif state == "NoWoodStat" then
+		return {
+			title = "John — Blacksmith",
+			body =
+				("Hmm… %s, I can’t see your wood count yet.\n\n"):format(displayName())
+				.. "Try chopping a tree first — then come back and we’ll talk upgrades.",
+			actions = {
+				showAccept = false,
+				showDecline = false,
+			},
+		}
+	else
+		return {
+			title = "Dialogue",
+			body = ("[Unknown state: %s]"):format(tostring(state)),
+			actions = {
+				showAccept = false,
+				showDecline = false,
+			},
+		}
+	end
 end
 
 local M = {}
@@ -330,9 +496,37 @@ function M.Start()
 		hide(r)
 	end)
 
+	r.acceptBtn.MouseButton1Click:Connect(function()
+		if currentContext then
+			dialogueChoice:FireServer({
+				npcId = currentContext.npcId,
+				dialogueId = currentContext.dialogueId,
+				choice = "Accept",
+			})
+		end
+
+		hide(r)
+	end)
+
+	r.declineBtn.MouseButton1Click:Connect(function()
+		if currentContext then
+			dialogueChoice:FireServer({
+				npcId = currentContext.npcId,
+				dialogueId = currentContext.dialogueId,
+				choice = "Decline",
+			})
+		end
+
+		hide(r)
+	end)
+
 	UserInputService.InputBegan:Connect(function(input, gp)
-		if gp then return end
-		if not r.panel.Visible then return end
+		if gp then
+			return
+		end
+		if not r.panel.Visible then
+			return
+		end
 		if input.KeyCode == Enum.KeyCode.Escape then
 			hide(r)
 		end
@@ -340,21 +534,32 @@ function M.Start()
 
 	local function bindViewportResize()
 		local cam = workspace.CurrentCamera
-		if not cam then return end
+		if not cam then
+			return
+		end
 		cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
 			if r.panel.Visible then
 				applyPanelLayout(r.panel)
 			end
 		end)
 	end
+
 	bindViewportResize()
 	workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindViewportResize)
 
-	openDialogue.OnClientEvent:Connect(function(state)
+	openDialogue.OnClientEvent:Connect(function(data)
+		local payload: DialoguePayload
+
+		if type(data) == "table" then
+			payload = data :: DialoguePayload
+		else
+			payload = legacyPayloadFromState(data)
+		end
+
 		applyPanelLayout(r.panel)
+		applyPayload(r, payload)
 		r.clickCatcher.Visible = true
 		r.panel.Visible = true
-		setDialogue(r, state)
 	end)
 
 	print("[Dialogue] Started.")

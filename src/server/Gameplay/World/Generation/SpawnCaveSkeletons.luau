@@ -26,7 +26,7 @@ local function mustModel(parent: Instance, name: string): Model
 end
 
 local templatesFolder = mustFolder(ServerStorage, "Templates")
-local charactersFolder = mustFolder(templatesFolder, "Characters") -- FIX: this is a Folder, not a Model
+local charactersFolder = mustFolder(templatesFolder, "Characters")
 local skeletonTemplate: Model = mustModel(charactersFolder, "Skeleton")
 
 local function getOrCreateFolder(parent: Instance, name: string): Folder
@@ -34,6 +34,7 @@ local function getOrCreateFolder(parent: Instance, name: string): Folder
 	if f and f:IsA("Folder") then
 		return f
 	end
+
 	local nf = Instance.new("Folder")
 	nf.Name = name
 	nf.Parent = parent
@@ -53,6 +54,7 @@ local SKELETONS_PER_CAVE = 3
 local SPAWN_RADIUS_MIN = 18
 local SPAWN_RADIUS_MAX = 35
 local MAX_TRIES_PER_SKELETON = 12
+local MAX_HEALTH = 60
 
 local function spawnSkeletonAt(worldX: number, worldZ: number, enemiesFolder: Folder, rng: Random): Model
 	local h = WorldHeight.heightAt(worldX, worldZ)
@@ -60,7 +62,32 @@ local function spawnSkeletonAt(worldX: number, worldZ: number, enemiesFolder: Fo
 	local groundY = baseY + h
 
 	local skel = skeletonTemplate:Clone()
+	skel.Name = "Skeleton"
 	skel.Parent = enemiesFolder
+
+	skel:SetAttribute("EnemyType", "Skeleton")
+	skel:SetAttribute("IsEnemy", true)
+	skel:SetAttribute("MaxHealth", MAX_HEALTH)
+	skel:SetAttribute("Damage", 4)
+	skel:SetAttribute("AttackRange", 4)
+	skel:SetAttribute("AggroRange", 80)
+	skel:SetAttribute("MoveSpeed", 10)
+	skel:SetAttribute("LeashToBaseAtNight", true)
+
+	local hum = skel:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.MaxHealth = MAX_HEALTH
+		hum.Health = hum.MaxHealth
+		hum.WalkSpeed = 10
+
+		hum.Died:Connect(function()
+			task.delay(2, function()
+				if skel.Parent then
+					skel:Destroy()
+				end
+			end)
+		end)
+	end
 
 	local _, size = skel:GetBoundingBox()
 	local rot = CFrame.Angles(0, math.rad(rng:NextInteger(0, 359)), 0)
@@ -108,7 +135,6 @@ function SpawnCaveSkeletons.Build(root: Folder, origin: Vector3, rng: Random, _s
 				local worldX = cavePos.X + math.cos(angle) * radius
 				local worldZ = cavePos.Z + math.sin(angle) * radius
 
-				-- keep inside this world's square bounds (in local coords)
 				local localX = worldX - origin.X
 				local localZ = worldZ - origin.Z
 				if localX < -half or localX > half or localZ < -half or localZ > half then

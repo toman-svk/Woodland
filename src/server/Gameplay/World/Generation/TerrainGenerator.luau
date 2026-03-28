@@ -46,49 +46,47 @@ function TerrainGenerator.Build(_root: Folder, origin: Vector3, _rng: Random, _s
 	local SPAWN_X: number = (WorldConfig.SPAWN_CENTER_X :: number?) or 0
 	local SPAWN_Z: number = (WorldConfig.SPAWN_CENTER_Z :: number?) or 0
 
-	-- ✅ NEW: dedicated hub radius (flat grass)
-	local HUB_R: number =
-		(WorldConfig.SPAWN_HUB_RADIUS :: number?)
-		or (WorldConfig.SPAWN_FLAT_RADIUS :: number?)
-		or ((WorldConfig.SPAWN_CLEAR_RADIUS :: number?) or 70)
+	-- Flat spawn area radius
+	local FLAT_R: number = (WorldConfig.SPAWN_FLAT_RADIUS :: number?) or 40
+	local FLAT_R2: number = FLAT_R * FLAT_R
 
-	local HUB_R2: number = HUB_R * HUB_R
+	-- Blend zone outside flat area to avoid hard cliff
+	local BLEND_WIDTH: number = (WorldConfig.SPAWN_HUB_BLEND_WIDTH :: number?) or 40
+	local BLEND_OUTER: number = FLAT_R + BLEND_WIDTH
+	local BLEND_OUTER2: number = BLEND_OUTER * BLEND_OUTER
 
-	-- Slope blending ring outside hub so it doesn't become a hard cliff
-	local HUB_BLEND: number = (WorldConfig.SPAWN_HUB_BLEND_WIDTH :: number?) or 40
-	local HUB_OUTER: number = HUB_R + HUB_BLEND
-	local HUB_OUTER2: number = HUB_OUTER * HUB_OUTER
-
-	-- plateau height sampled in WORLD coords at spawn center
-	local plateauH: number
-do
-	local fixed = WorldConfig.SPAWN_HUB_FIXED_GROUND_Y
-	if typeof(fixed) == "number" then
-		plateauH = (fixed :: number) - BASE_Y -- convert absolute Y to "height above BASE_Y"
-	else
-		plateauH = WorldHeight.heightAt(origin.X + SPAWN_X, origin.Z + SPAWN_Z)
+	-- Fixed flat terrain height at spawn
+	local flatH: number
+	do
+		local fixed = WorldConfig.SPAWN_HUB_FIXED_GROUND_Y
+		if typeof(fixed) == "number" then
+			flatH = (fixed :: number) - BASE_Y
+		else
+			flatH = 50 -- fallback
+		end
 	end
-end
 
-	local function hubBlendHeight(localX: number, localZ: number, rawH: number): number
+	local function getTerrainHeight(localX: number, localZ: number): number
 		local dx = localX - SPAWN_X
 		local dz = localZ - SPAWN_Z
 		local d2 = dx * dx + dz * dz
 
-		-- ✅ perfect flat inside hub
-		if d2 <= HUB_R2 then
-			return plateauH
+		-- Perfectly flat inside spawn flat area
+		if d2 <= FLAT_R2 then
+			return flatH
 		end
 
-		-- outside blend ring: normal terrain
-		if d2 >= HUB_OUTER2 then
+		-- Get noisy terrain outside
+		local rawH = WorldHeight.heightAt(origin.X + localX, origin.Z + localZ)
+
+		-- Smooth blend between flat and noisy (no hard cliff)
+		if d2 >= BLEND_OUTER2 then
 			return rawH
 		end
 
-		-- between: smooth blend from flat -> raw
 		local dist = math.sqrt(d2)
-		local t = smoothstep((dist - HUB_R) / HUB_BLEND)
-		return plateauH * (1 - t) + rawH * t
+		local t = smoothstep((dist - FLAT_R) / BLEND_WIDTH)
+		return flatH * (1 - t) + rawH * t
 	end
 
 	-- 0) Ocean
@@ -113,31 +111,21 @@ end
 			local dist = math.sqrt(lx * lx + lz * lz)
 
 			if dist <= WORLD_RADIUS then
-				local rawH = WorldHeight.heightAt(origin.X + lx, origin.Z + lz)
-				local h = hubBlendHeight(lx, lz, rawH)
+				local h = getTerrainHeight(lx, lz)
 
-				-- ✅ micro jitter only OUTSIDE the hub (keeps hub perfectly flat)
-				do
-					local dx = lx - SPAWN_X
-					local dz = lz - SPAWN_Z
-					local d2 = dx * dx + dz * dz
-					if d2 > HUB_R2 then
-						local micro = math.noise((origin.X + lx) * 0.08, (origin.Z + lz) * 0.08) * 1.5
-						h += micro
-					end
+				-- Add micro jitter only OUTSIDE the flat spawn area
+				local dx = lx - SPAWN_X
+				local dz = lz - SPAWN_Z
+				local d2 = dx * dx + dz * dz
+				if d2 > FLAT_R2 then
+					local micro = math.noise((origin.X + lx) * 0.08, (origin.Z + lz) * 0.08) * 1.5
+					h += micro
 				end
 
-				-- ✅ force hub area material to grass
+				-- Flat area = grass, rocky areas = rock
 				local mat = Enum.Material.Grass
-				do
-					local dx = lx - SPAWN_X
-					local dz = lz - SPAWN_Z
-					local d2 = dx * dx + dz * dz
-					if d2 > HUB_R2 then
-						if h > rockStart then
-							mat = Enum.Material.Rock
-						end
-					end
+				if d2 > FLAT_R2 and h > rockStart then
+					mat = Enum.Material.Rock
 				end
 
 				fillColumn(origin, STEP, BASE_Y, lx, lz, h, mat)
@@ -148,8 +136,7 @@ end
 				local projX = lx * (WORLD_RADIUS / dist)
 				local projZ = lz * (WORLD_RADIUS / dist)
 
-				local landEdgeH = WorldHeight.heightAt(origin.X + projX, origin.Z + projZ)
-				landEdgeH = hubBlendHeight(projX, projZ, landEdgeH)
+				local landEdgeH = getTerrainHeight(projX, projZ)
 
 				local targetH = SEA_LEVEL - 2
 				local beachH = landEdgeH * (1 - t) + targetH * t
@@ -160,8 +147,8 @@ end
 		end
 	end
 
-	print(("[Terrain] Generated island STEP=%d origin=(%.0f,%.0f) r=%.0f beach=%d sea=%d plateauH=%.1f hubR=%d hubBlend=%d"):format(
-		STEP, origin.X, origin.Z, WORLD_RADIUS, BEACH_WIDTH, SEA_LEVEL, plateauH, HUB_R, HUB_BLEND
+	print(("[Terrain] Generated island STEP=%d origin=(%.0f,%.0f) r=%.0f beach=%d sea=%d flatH=%.1f flatR=%d blend=%d"):format(
+		STEP, origin.X, origin.Z, WORLD_RADIUS, BEACH_WIDTH, SEA_LEVEL, flatH, FLAT_R, BLEND_WIDTH
 	))
 end
 
